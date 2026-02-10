@@ -4,9 +4,9 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, StochasticWeightAveraging
 from torch.optim.swa_utils import get_ema_avg_fn
 from torchinfo import summary
-from data import *
+from BTE.data import *
 #from model_interact import *
-from model_dino import *
+from Biotransformer.BTE import *
 from itertools import chain
 from torch.utils.data import DataLoader, TensorDataset, Dataset
 from datetime import datetime
