@@ -1,6 +1,8 @@
-# Electrostatics-BiophysicalTransformer (WIP)
+# BiophysicalTransformer (WIP)
 
-This repository implements a Biophysical Transformer for electrostatic analysis. Follow the steps below to configure your environment.
+This repository implements a Biophysical Transformer capturing joint sequence-electrostatics latent representations using a Student-Teacher schema with sinkorn-knopp clustering for self-supervised learning. The output trunk is a Voxel generator trained GAN-style.
+
+Follow the steps below to configure your environment.
 
 ## 🛠 Environment Setup (manual, you can also use the build.sh as well)
 
