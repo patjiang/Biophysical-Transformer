@@ -14,7 +14,7 @@ from modules import (
 )
 from losses import wa_loss
 
-class EBTLightning(pl.LightningModule):
+class BTELightning(pl.LightningModule):
     def __init__(self, 
                  learning_rate: float = 1e-3,
                  d_learning_rate: float = 1e-4,
