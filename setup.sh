@@ -32,7 +32,7 @@ else
     git clone https://github.com/patjiang/se3cnn.git
 fi
 
-echo "🔧 Installing se3cnn"
+echo "Installing se3cnn"
 cd ${SE3CNN_DIR}
 python setup.py install
 cd ..
@@ -47,7 +47,7 @@ pip install \
     einops==0.8.1 \
     matplotlib==3.10.3
 
-echo "Verifying SE3-CNN installation"
+echo "Verifying SE3CNN installation"
 
 python - << 'EOF'
 import torch
