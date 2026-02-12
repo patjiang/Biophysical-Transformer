@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-echo "🚀 Setting up EBPT environment"
+echo "Setting up EBPT environment"
 
 
 ENV_NAME="EBPT"
