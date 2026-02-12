@@ -68,7 +68,7 @@ def main():
 
     lr_monitor_cb = LearningRateMonitor(logging_interval="step")
 
-    model = SE3PLMLightning(
+    model = EBPTLightning(
         learning_rate=5e-5,
         weight_decay=1e-7,
         optimizer_type="adamw",
