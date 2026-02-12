@@ -38,7 +38,7 @@ python setup.py install
 cd ..
 
 echo "Installing helper libraries"
-pip install appdirs lie_learn scipy
+pip install appdirs lie_learn scipy torchinfo
 
 echo "Installing core training dependencies"
 pip install \
