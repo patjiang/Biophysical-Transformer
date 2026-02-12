@@ -13,3 +13,10 @@ for me:
 ```
 git clone https://patjiang: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@github.com/patjiang/BiophysicalTransformer.git
 ```
+
+```
+python train_bt_elec.py --data_base ../../data/kstruct_pt \
+                --data_env ../../data/kstruct_env_pt \
+                --data_split 0.85 \
+                --max_epochs 100
+```
