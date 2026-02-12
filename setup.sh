@@ -49,6 +49,8 @@ pip install \
 
 echo "Verifying SE3CNN installation"
 
+rm -r se3cnn
+
 python - << 'EOF'
 import torch
 from se3cnn.image.convolution import SE3Convolution
