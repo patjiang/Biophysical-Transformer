@@ -25,14 +25,14 @@ print("SE3CNN OK")
 
 print("Testing module imports...")
 
-from modules import (
+from EBPT.modules import (
     TransformerStackEnc,
     InteractionTokenBlock,
     VoxelizeTrunk,
     PatchDiscriminator3D,
 )
 
-from losses import wa_loss
+from EBPT.losses import wa_loss
 
 print("Module imports OK")
 
