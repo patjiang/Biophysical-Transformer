@@ -1,85 +1,104 @@
+import argparse
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, StochasticWeightAveraging
-from torch.optim.swa_utils import get_ema_avg_fn
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from torchinfo import summary
 from EBPT.data import *
-#from model_interact import *
 from EBPT.EBPT import *
-from itertools import chain
-from torch.utils.data import DataLoader, TensorDataset, Dataset
 from datetime import datetime
 from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
 
-NUM_WORKERS = 32
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-train_dataset = BiophysicalRepresentation('../../data/kstruct_pt', device, [0,5000], '../../data/kstruct_env_pt')
-vali_dataset = BiophysicalRepresentation('../../data/kstruct_pt', device, [5000,-1], '../../data/kstruct_env_pt')
-train_loader = ChainedDataLoader(train_dataset, batch_size=1, num_workers=NUM_WORKERS, collate_fn=env_collate(mask=True), shuffle=True)
-vali_loader = ChainedDataLoader(vali_dataset, batch_size=1, num_workers=NUM_WORKERS, collate_fn=env_collate(mask=False))
+def main():
+    parser = argparse.ArgumentParser(description="EBPT Training Script")
+    
+    parser.add_argument("--data_base", type=str, required=True)
+    parser.add_argument("--data_env", type=str, required=True)
+    parser.add_argument("--data_split", type=float, default=0.8)
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--max_epochs", type=int, default=200)
+    parser.add_argument("--num_workers", type=int, default=32)
+    
+    args = parser.parse_args()
 
-SAVE_DIR = "chkpts"
-MAX_EPOCHS = 200
-BASE_LR = 5e-5
-MAX_LR_FACTOR = 40.0
-STEP_SIZE_UP = 10
-LAMBDA_WA = 50.0#5000.0
+    TOTAL_SAMPLES = 6250 
+    split_idx = int(TOTAL_SAMPLES * args.data_split)
+    
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    train_dataset = BiophysicalRepresentation(
+        args.data_base, device, [0, split_idx], args.data_env
+    )
+    vali_dataset = BiophysicalRepresentation(
+        args.data_base, device, [split_idx, -1], args.data_env
+    )
 
-torch.set_float32_matmul_precision('medium')
+    train_loader = ChainedDataLoader(
+        train_dataset, 
+        batch_size=args.batch_size, 
+        num_workers=args.num_workers, 
+        collate_fn=env_collate(mask=True), 
+        shuffle=True
+    )
+    vali_loader = ChainedDataLoader(
+        vali_dataset, 
+        batch_size=args.batch_size, 
+        num_workers=args.num_workers, 
+        collate_fn=env_collate(mask=False)
+    )
 
-checkpoint_cb = ModelCheckpoint(
-    dirpath=SAVE_DIR,
-    filename="best_{epoch:02d}-{val_loss:.4f}",
-    save_top_k=10,
-    monitor="val_loss",
-    mode="min",
-)
+    SAVE_DIR = "chkpts"
+    torch.set_float32_matmul_precision('medium')
 
-checkpoint_last = ModelCheckpoint(
-    dirpath=SAVE_DIR,
-    filename="last_{epoch:02d}",
-    save_top_k=1,
-    monitor="epoch",
-    mode="max",
-)
+    checkpoint_cb = ModelCheckpoint(
+        dirpath=SAVE_DIR,
+        filename="best_{epoch:02d}-{val_loss:.4f}",
+        save_top_k=10,
+        monitor="val_loss",
+        mode="min",
+    )
 
-lr_monitor_cb = LearningRateMonitor(logging_interval="step")
+    checkpoint_last = ModelCheckpoint(
+        dirpath=SAVE_DIR,
+        filename="last_{epoch:02d}",
+        save_top_k=1,
+        monitor="epoch",
+        mode="max",
+    )
 
-model = SE3PLMLightning(
-    learning_rate=BASE_LR,
-    weight_decay=1e-7,
-    optimizer_type="adamw",
-    cyclic_lr=True,
-    max_lr_factor=MAX_LR_FACTOR,
-    step_size_up=STEP_SIZE_UP,
-    lambda_wa=LAMBDA_WA,
-)
+    lr_monitor_cb = LearningRateMonitor(logging_interval="step")
 
-#swa_callback = StochasticWeightAveraging(swa_lrs=BASE_LR * 0.1, swa_epoch_start=0.75)
+    model = SE3PLMLightning(
+        learning_rate=5e-5,
+        weight_decay=1e-7,
+        optimizer_type="adamw",
+        cyclic_lr=True,
+        max_lr_factor=40.0,
+        step_size_up=10,
+        lambda_wa=50.0,
+    )
 
-def setup_loggers(save_dir):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    tb_logger = TensorBoardLogger(save_dir=save_dir, name="tb_logs", version=timestamp)
-    csv_logger = CSVLogger(save_dir=save_dir, name="csv_logs", version=timestamp)
-    return [tb_logger, csv_logger]
+    loggers = [
+        TensorBoardLogger(save_dir=SAVE_DIR, name="tb_logs", version=timestamp),
+        CSVLogger(save_dir=SAVE_DIR, name="csv_logs", version=timestamp)
+    ]
 
-loggers = setup_loggers('chkpts')
+    trainer = pl.Trainer(
+        max_epochs=args.max_epochs,
+        accelerator="auto",
+        devices="auto",
+        default_root_dir=SAVE_DIR,
+        callbacks=[checkpoint_cb, checkpoint_last, lr_monitor_cb],
+        precision='16-mixed',
+        log_every_n_steps=1,
+        logger=loggers,
+        strategy='ddp_find_unused_parameters_true',
+        profiler="simple"
+    )
 
-trainer = pl.Trainer(
-    max_epochs=MAX_EPOCHS,
-    accelerator="auto",
-    devices="auto",
-    default_root_dir=SAVE_DIR,
-    callbacks=[checkpoint_cb, checkpoint_last, lr_monitor_cb],# swa_callback],
-    precision='16-mixed',
-    log_every_n_steps=1,
-    #gradient_clip_val=2.0,
-    logger=loggers,
-    #accumulate_grad_batches=32,
-    strategy='ddp_find_unused_parameters_true',
-    profiler="simple"
-)
+    print(summary(model))
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=vali_loader)
 
-print(summary(model))
-trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=vali_loader)
+if __name__ == "__main__":
+    main()
