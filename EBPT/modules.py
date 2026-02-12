@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
-from EBPT.blocks import *
+from .blocks import *
 
 class SE3Transformer(nn.Module):
     def __init__(self, channels, se3_dimprod, num_layers = 1, ffn_mult = 2, dropout = 0.1):
