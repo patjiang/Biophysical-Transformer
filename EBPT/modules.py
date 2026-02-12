@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from blocks import *
+from EBPT.blocks import *
 
 class SE3Transformer(nn.Module):
     def __init__(self, channels, se3_dimprod, num_layers = 1, ffn_mult = 2, dropout = 0.1):
