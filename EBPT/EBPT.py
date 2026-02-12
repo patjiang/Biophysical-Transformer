@@ -6,13 +6,13 @@ import copy
 
 from einops import rearrange, repeat
 
-from EBPT.modules import (
+from .modules import (
     TransformerStackEnc,
     InteractionTokenBlock,
     VoxelizeTrunk,
     PatchDiscriminator3D,
 )
-from EBPT.losses import wa_loss
+from .losses import wa_loss
 
 class EBPTLightning(pl.LightningModule):
     def __init__(self, 
