@@ -6,7 +6,7 @@ from torch.optim.swa_utils import get_ema_avg_fn
 from torchinfo import summary
 from EPBT.data import *
 #from model_interact import *
-from Biotransformer.EBPT import *
+from EBPT.EBPT import *
 from itertools import chain
 from torch.utils.data import DataLoader, TensorDataset, Dataset
 from datetime import datetime
