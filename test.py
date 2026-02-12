@@ -84,7 +84,7 @@ print("WA loss OK")
 
 print("Testing Lightning module...")
 
-from Biotransformer.EBPT import EBPTLightning
+from EBPT.EBPT import EBPTLightning
 
 model = EBTLightning().to(device)
 model.eval()
