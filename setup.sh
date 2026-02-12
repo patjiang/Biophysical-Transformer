@@ -49,7 +49,7 @@ pip install \
 
 echo "Verifying SE3CNN installation"
 
-rm -r se3cnn
+#rm -r se3cnn
 
 python - << 'EOF'
 import torch
