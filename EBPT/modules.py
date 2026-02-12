@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+import torch.utils.checkpoint
 from EBPT.blocks import *
 
 class SE3Transformer(nn.Module):
