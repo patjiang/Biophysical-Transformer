@@ -4,7 +4,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, StochasticWeightAveraging
 from torch.optim.swa_utils import get_ema_avg_fn
 from torchinfo import summary
-from EPBT.data import *
+from EBPT.data import *
 #from model_interact import *
 from EBPT.EBPT import *
 from itertools import chain
