@@ -48,7 +48,8 @@ encoder = TransformerStackEnc(
     vocab_size=8002
 ).to(device)
 
-z = encoder(seqs)
+with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+    z = encoder(seqs)
 assert z.shape == (B, L, 64)
 print("Encoder forward OK")
 
