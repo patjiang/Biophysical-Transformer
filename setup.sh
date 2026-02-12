@@ -23,7 +23,7 @@ pip install --upgrade pip
 pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
     --index-url https://download.pytorch.org/whl/cu126
 
-SE3CNN_DIR="se3cnn"
+SE3CNN_DIR="se3cnn-patch"
 
 if [ -d "${SE3CNN_DIR}" ]; then
     echo "se3cnn repo already exists, skipping clone"
