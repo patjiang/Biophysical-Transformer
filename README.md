@@ -7,3 +7,9 @@ Follow the steps in [setup.md](EBPT/setup.md) to configure your environment, or 
 chmod +x setup.sh
 ./setup.sh
 ```
+
+
+for me:
+```
+git clone https://patjiang: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@github.com/patjiang/BiophysicalTransformer.git
+```
