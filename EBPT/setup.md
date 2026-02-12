@@ -27,7 +27,7 @@ pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https
 > This fork includes a necessary fix for `scipy.linalg.eigh` calls in `SO3.py`.
 
 ```bash
-git clone https://github.com/patjiang/se3cnn.git
+git clone https://github.com/patjiang/se3cnn-patch.git
 cd se3cnn
 python setup.py install
 cd ..
