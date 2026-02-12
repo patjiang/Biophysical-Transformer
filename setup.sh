@@ -29,7 +29,7 @@ if [ -d "${SE3CNN_DIR}" ]; then
     echo "se3cnn repo already exists, skipping clone"
 else
     echo "Cloning custom se3cnn fork"
-    git clone https://github.com/patjiang/se3cnn.git
+    git clone https://github.com/patjiang/se3cnn-patch.git
 fi
 
 echo "Installing se3cnn"
