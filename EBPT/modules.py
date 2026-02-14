@@ -4,82 +4,171 @@ import torch.utils.checkpoint
 from .blocks import *
 
 class SE3Transformer(nn.Module):
-    def __init__(self, channels, se3_dimprod, num_layers = 1, ffn_mult = 2, dropout = 0.1):
+    def __init__(self, scalar_ch, vector_ch, dimprod_scalar, dimprod_vector,
+                 num_layers=1, ffn_mult=2, dropout=0.1):
         super().__init__()
-        self.layers = nn.ModuleList([])
+        self.scalar_ch = scalar_ch
+        self.layers = nn.ModuleList()
+
         for _ in range(num_layers):
-            self.layers.append(nn.ModuleList([
-                    SE3ConvolutionalSelfAttention3d(channels, se3_dimprod),
-                    ConvFeedForward(channels, ffn_mult, dropout),
-                    nn.InstanceNorm3d(channels),
-                    nn.GELU()
-                ]))
+            self.layers.append(nn.ModuleDict({
+                'attn': SE3ConvolutionalSelfAttention3d(
+                    scalar_ch,
+                    vector_ch,
+                    dimprod_scalar,
+                    dimprod_vector
+                ),
+                'norm_s': nn.InstanceNorm3d(scalar_ch, affine=True),
+                'norm_v': nn.InstanceNorm3d(vector_ch * 3, affine=True),
+                'ffn': EquivariantFeedForward(
+                    scalar_ch,
+                    vector_ch,
+                    ffn_mult,
+                    dropout
+                )
+            }))
 
     def forward(self, x):
-        def _layer_fwd(x, attention, ffn, norm, activation):
-            x = attention(x)
-            x = x + ffn(x)
-            x = norm(x)
-            x = activation(x)
+        def _layer_fwd(x, attn, ffn, norm_s, norm_v, s_ch):
+            x = attn(x)
+            x_s = norm_s(x[:, :s_ch])
+            x_v = norm_v(x[:, s_ch:])
+            x_normed = torch.cat([x_s, x_v], dim=1)
+            x = x + ffn(x_normed)
             return x
 
-        for attention, ffn, norm, activation in self.layers:
+        for layer in self.layers:
+            args = (
+                x,
+                layer['attn'],
+                layer['ffn'],
+                layer['norm_s'],
+                layer['norm_v'],
+                self.scalar_ch
+            )
+
             if self.training:
-                x.requires_grad_(True)
-                x = torch.utils.checkpoint.checkpoint(_layer_fwd, x, attention, ffn, norm, activation, use_reentrant=False)
+                x = torch.utils.checkpoint.checkpoint(
+                    _layer_fwd, *args, use_reentrant=False
+                )
             else:
-                x = _layer_fwd(x, attention, ffn, norm, activation)
+                x = _layer_fwd(*args)
+
         return x
+
 
 class SE3CrossTransformer(nn.Module):
-    def __init__(self, channels, se3_dimprod, num_layers = 1, ffn_mult = 2, dropout = 0.1, z_dim=64, n_heads=8):
+    def __init__(self, scalar_ch, vector_ch, dimprod_scalar, dimprod_vector,
+                 context_dim, num_layers=1, n_heads=8, ffn_mult=2, dropout=0.1):
         super().__init__()
-        self.layers = nn.ModuleList([])
+
+        self.scalar_ch = scalar_ch
+        self.total_ch = scalar_ch + vector_ch * 3
+        self.layers = nn.ModuleList()
+
         for _ in range(num_layers):
-            self.layers.append(nn.ModuleList([
-                    SE3ConvolutionalSelfAttention3d(
-                        channels, 
-                        se3_dimprod
-                    ),
-                    nn.MultiheadAttention(
-                        embed_dim=channels,
-                        kdim=z_dim,
-                        vdim=z_dim,
-                        num_heads=n_heads,
-                        batch_first=False
-                    ),
-                    ConvFeedForward(channels, ffn_mult, dropout),
-                    nn.LayerNorm(channels),
-                    nn.InstanceNorm3d(channels)
-                ]))
+            self.layers.append(nn.ModuleDict({
+                'se3_self_attn': SE3ConvolutionalSelfAttention3d(
+                    scalar_ch,
+                    vector_ch,
+                    dimprod_scalar,
+                    dimprod_vector
+                ),
+                'norm_cross_s': nn.InstanceNorm3d(scalar_ch, affine=True),
+                'norm_cross_v': nn.InstanceNorm3d(vector_ch * 3, affine=True),
+                'mha': nn.MultiheadAttention(
+                    embed_dim=self.total_ch,
+                    kdim=context_dim,
+                    vdim=context_dim,
+                    num_heads=n_heads,
+                    batch_first=False
+                ),
+                'norm_ffn_s': nn.InstanceNorm3d(scalar_ch, affine=True),
+                'norm_ffn_v': nn.InstanceNorm3d(vector_ch * 3, affine=True),
+                'ffn': EquivariantFeedForward(
+                    scalar_ch,
+                    vector_ch,
+                    ffn_mult,
+                    dropout
+                )
+            }))
 
     def forward(self, x, context):
-        def _layer_fwd(x, context, attention, mha, ffn, norm1, norm2):
-            x = attention(x)
+        def _layer_fwd(x, context, se3_attn, mha, ffn,
+                       norm_cs, norm_cv, norm_fs, norm_fv, s_ch):
             B, C, D, H, W = x.shape
-            query = x.flatten(2).permute(2, 0, 1)
-            key, value = context.expand(-1, B, -1), context.expand(-1, B, -1)
-            mha_o, _ = mha(norm1(query), key, value)
-            x = query + mha_o
-            x = x.permute(1, 2, 0).reshape(B, C, D, H, W)
-            x = x + ffn(norm2(x))
+
+            x = se3_attn(x)
+
+            x_s = norm_cs(x[:, :s_ch])
+            x_v = norm_cv(x[:, s_ch:])
+            x_normed = torch.cat([x_s, x_v], dim=1)
+
+            query = x_normed.flatten(2).permute(2, 0, 1)
+            mha_out, _ = mha(query, context, context)
+            mha_out = mha_out.permute(1, 2, 0).reshape(B, C, D, H, W)
+
+            x = x + mha_out
+
+            x_s = norm_fs(x[:, :s_ch])
+            x_v = norm_fv(x[:, s_ch:])
+            x_normed = torch.cat([x_s, x_v], dim=1)
+
+            x = x + ffn(x_normed)
+
             return x
 
-        for attention, mha, ffn, norm1, norm2 in self.layers:
+        for layer in self.layers:
+            args = (
+                x,
+                context,
+                layer['se3_self_attn'],
+                layer['mha'],
+                layer['ffn'],
+                layer['norm_cross_s'],
+                layer['norm_cross_v'],
+                layer['norm_ffn_s'],
+                layer['norm_ffn_v'],
+                self.scalar_ch
+            )
+
             if self.training:
-                x.requires_grad_(True)
-                x = torch.utils.checkpoint.checkpoint(_layer_fwd, x, context, attention, mha, ffn, norm1, norm2, use_reentrant=False)
+                x = torch.utils.checkpoint.checkpoint(
+                    _layer_fwd, *args, use_reentrant=False
+                )
             else:
-                x = _layer_fwd(x, context, attention, mha, ffn, norm1, norm2)
+                x = _layer_fwd(*args)
+
         return x
 
-class VoxelizeTrunk(nn.Module):
-    def __init__(self, tot_layers=3):
+class DepthwiseSeparableConv3d(nn.Module):
+    def __init__(self, in_ch, out_ch, kernel_size=3, padding=1):
         super().__init__()
+        self.depthwise = nn.Conv3d(
+            in_ch, in_ch, kernel_size=kernel_size,
+            padding=padding, groups=in_ch
+        )
+        self.pointwise = nn.Conv3d(in_ch, out_ch, kernel_size=1)
+
+    def forward(self, x):
+        x = self.depthwise(x)
+        x = self.pointwise(x)
+        return x
+
+
+
+class VoxelizeTrunk(nn.Module):
+    def __init__(self, context_dim=64, tot_layers=3):
+        super().__init__()
+        self.scalar_ch = 29
+        self.vector_ch = 1
         self.context_to_query = nn.Sequential(
-            nn.Linear(64, 29 * 4 * 4 * 4),
+            nn.Linear(64, self.scalar_ch * 4 * 4 * 4),
             nn.GELU()
         )
+        self.cond_proj_32 = nn.Linear(64, 64)
+        self.cond_proj_24 = nn.Linear(64, 48)
+        self.cond_proj_16 = nn.Linear(64, 32)
         grid = torch.stack(torch.meshgrid(
             torch.linspace(-1, 1, 4),
             torch.linspace(-1, 1, 4),
@@ -87,47 +176,105 @@ class VoxelizeTrunk(nn.Module):
             indexing='ij'
         ))
         self.register_buffer('coord_grid', grid)
-        self.sct1 = SE3CrossTransformer(32, 64, num_layers=tot_layers // 2)
-        self.up0 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
-        if tot_layers % 2 == 1:
-            ncl = 1 + (tot_layers // 2)
-        else:
-            ncl = tot_layers // 2
-        self.sct2 = SE3Transformer(32, 512, num_layers=2)
-        self.up1 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
+        self.sct1 = SE3CrossTransformer(
+            scalar_ch=self.scalar_ch, 
+            vector_ch=self.vector_ch, 
+            dimprod_scalar=32, 
+            dimprod_vector=8, 
+            context_dim=context_dim, 
+            num_layers=1
+        )
+        self.sct2 = SE3Transformer(
+            scalar_ch=self.scalar_ch, 
+            vector_ch=self.vector_ch, 
+            dimprod_scalar=32, 
+            dimprod_vector=8, 
+            num_layers=1
+        )
+        self.reduce_32_to_24 = nn.Conv3d(32, 24, 1) 
+        self.reduce_24_to_16 = nn.Conv3d(24, 16, 1)
         self.refine_16 = nn.Sequential(
-            nn.Conv3d(32, 32, kernel_size=3, padding=1),
-            nn.InstanceNorm3d(32),
+            DepthwiseSeparableConv3d(24, 24, 3, 1),
+            nn.InstanceNorm3d(24),
             nn.GELU()
         )
-        self.up2 = nn.Upsample(size=(33, 33, 33), mode='trilinear', align_corners=False)
-        self.refine = nn.Sequential(
-            nn.Conv3d(32, 32, kernel_size=3, padding=1),
-            nn.InstanceNorm3d(32),
+        self.refine_33 = nn.Sequential(
+            DepthwiseSeparableConv3d(16, 16, 3, 1),
+            nn.InstanceNorm3d(16),
             nn.GELU()
         )
         self.convout = nn.Sequential(
-            nn.Conv3d(32, 1, 3, padding=1),
+            DepthwiseSeparableConv3d(16, 16, 3, 1),
+            nn.GELU(),
+            nn.Conv3d(16, 1, 1),
             nn.Tanh()
         )
-        
+        self.up0 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
+        self.up1 = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
+        self.up2 = nn.Upsample(size=(33, 33, 33), mode='trilinear', align_corners=False)
+
+    def se3_film(self, x, cond_proj, cond):
+        if cond.dim() == 3 and cond.size(1) == 1:
+            cond = cond.squeeze(1)
+        params = cond_proj(cond)
+        B, C, D, H, W = x.shape
+        num_scalar_params = self.scalar_ch * 2
+        num_vector_params = self.vector_ch
+        params_s = params[:, :num_scalar_params]
+        params_v = params[:, num_scalar_params:num_scalar_params + num_vector_params]
+        x_s = x[:, :self.scalar_ch]
+        gamma_s, beta_s = params_s.chunk(2, dim=1)
+        gamma_s = gamma_s.view(B, self.scalar_ch, 1, 1, 1)
+        beta_s = beta_s.view(B, self.scalar_ch, 1, 1, 1)
+        x_s = x_s * (1.0 + gamma_s) + beta_s
+        x_v = x[:, self.scalar_ch:]
+        x_v = x_v.view(B, self.vector_ch, 3, D, H, W)
+        gamma_v = params_v.view(B, self.vector_ch, 1, 1, 1, 1)
+        x_v = x_v * (1.0 + gamma_v)
+        x_v = x_v.view(B, self.vector_ch * 3, D, H, W)
+        return torch.cat([x_s, x_v], dim=1)
+
+    def standard_film(self, x, cond_proj, cond):
+        if cond.dim() == 3 and cond.size(1) == 1:
+            cond = cond.squeeze(1)
+        gamma_beta = cond_proj(cond)
+        B, C = x.shape[:2]
+        gamma, beta = gamma_beta.chunk(2, dim=1)
+        gamma = gamma.view(B, C, 1, 1, 1)
+        beta = beta.view(B, C, 1, 1, 1)
+        return x * (1.0 + gamma) + beta
+
     def forward(self, x, global_context):
-        B = x.shape[0]
+        B = global_context.shape[0]
         dynamic_latent = self.context_to_query(global_context)
-        dynamic_latent = dynamic_latent.view(B, 29, 4, 4, 4)
-        query = torch.cat([
-            dynamic_latent,
-            self.coord_grid.unsqueeze(0).repeat(B, 1, 1, 1, 1)
-        ], dim=1)
-        x = self.sct1(query, x)
-        x = self.up0(x)
-        x = self.sct2(x)
-        x = self.up1(x)
-        x = self.refine_16(x)
-        x = self.up2(x)
-        x = self.refine(x)
-        x = self.convout(x)
-        return x
+        dynamic_latent = dynamic_latent.view(B, self.scalar_ch, 4, 4, 4)
+        grid_batch = self.coord_grid.unsqueeze(0).expand(B, -1, -1, -1, -1)
+        query = torch.cat([dynamic_latent, grid_batch], dim=1)
+        if global_context.dim() == 2:
+            mha_context = global_context.unsqueeze(0) 
+        else:
+            mha_context = global_context.permute(1, 0, 2)
+        x4 = self.sct1(query, mha_context) 
+        x4 = self.se3_film(x4, self.cond_proj_32, global_context)
+        x8 = self.up0(x4)
+        x8 = self.sct2(x8)
+        x8 = self.se3_film(x8, self.cond_proj_32, global_context)
+        skip8 = x8 
+        x16 = self.up1(x8)
+        x16 = self.reduce_32_to_24(x16)
+        x16 = self.refine_16(x16)
+        x16 = self.standard_film(x16, self.cond_proj_24, global_context)
+        x33 = self.up2(x16)
+        x33 = self.reduce_24_to_16(x33)
+        x33 = self.refine_33(x33)
+        x33 = self.standard_film(x33, self.cond_proj_16, global_context)
+        skip8_std = self.reduce_32_to_24(skip8)
+        skip8_reduced = self.reduce_24_to_16(skip8_std)
+        skip33 = self.up2(skip8_reduced)
+        x33 = x33 + skip33
+        out = self.convout(x33)
+        return out
+
 
 class FactorizedMLMHead(nn.Module):
     def __init__(self, embedding_weight, latent_dim=64):
