@@ -1,4 +1,6 @@
+import torch
 import torch.nn as nn
+
 from se3cnn.image.convolution import SE3Convolution
 
 class ConvolutionalSelfAttention3d(nn.Module):
