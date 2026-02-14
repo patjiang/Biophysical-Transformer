@@ -54,7 +54,7 @@ class EBPTLightning(pl.LightningModule):
         
         self.i = InteractionTokenBlock()
         self.b = VoxelizeTrunk()
-        nn.init.constant_(self.b.convout[0].bias, 0.5)
+        #nn.init.constant_(self.b.convout[0].bias, 0.5)
         
         self.discriminator = PatchDiscriminator3D(in_channels=1)
 
