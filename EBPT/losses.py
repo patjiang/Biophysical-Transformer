@@ -141,7 +141,7 @@ def loss_spectral(ori, rec):
     loss = F.l1_loss(torch.log(amp_rec + 1e-8), torch.log(amp_ori + 1e-8))    
     return loss
 
-def wa_loss(ori, reconstruction, projvec, denorm=True, split_posneg=True, max_val=4981.8994140625):
+def wa_loss(ori, reconstruction, denorm=True, split_posneg=True, max_val=4981.8994140625):
     with torch.amp.autocast('cuda', enabled=False):
         dev = ori.device
         scale_factor = max_val if denorm else 1.0
