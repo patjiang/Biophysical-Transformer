@@ -473,15 +473,21 @@ class TransformerStackEnc(nn.Module):
 class PatchDiscriminator3D(nn.Module):
     def __init__(self, in_channels=1):
         super().__init__()
+        
+        def conv_block(in_c, out_c, k, s, p, use_norm=True):
+            layers = [nn.Conv3d(in_c, out_c, k, s, p)]
+            if use_norm:
+                layers.append(nn.InstanceNorm3d(out_c, affine=True))
+            layers.append(nn.LeakyReLU(0.2, inplace=False))
+            return nn.Sequential(*layers)
+
         self.model = nn.Sequential(
-            nn.utils.spectral_norm(nn.Conv3d(in_channels, 16, 4, 2, 1)),
-            nn.BatchNorm3d(16),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.utils.spectral_norm(nn.Conv3d(16, 8, 4, 2, 1)),
-            nn.BatchNorm3d(8),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.utils.spectral_norm(nn.Conv3d(8, 1, 4, 1, 0))
+            conv_block(in_channels, 32, 4, 2, 1, use_norm=False),
+            conv_block(32, 64, 4, 2, 1, use_norm=True),
+            conv_block(64, 128, 4, 2, 1, use_norm=True),
+            conv_block(128, 64, 3, 1, 1, use_norm=True),
+            nn.Conv3d(64, 1, 3, 1, 0)
         )
-    
+   
     def forward(self, x):
         return self.model(x)
