@@ -14,6 +14,10 @@ from .modules import (
 )
 from .losses import wa_loss
 
+def check_nan(tensor, name):
+    if not torch.isfinite(tensor).all():
+        raise RuntimeError(f"NaN/Inf in {name}: max={tensor.max()}, min={tensor.min()}")
+        
 def compute_and_initialize_biases(
     train_loader,
     mlm_head,
