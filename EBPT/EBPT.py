@@ -250,34 +250,37 @@ class EBPTLightning(pl.LightningModule):
         return Q
 
     def compute_structure_loss(self, rec, tdat, tmsk=None):
-        def focal_mse(pred, target, gamma=0.8):
-            squared_err = (pred - target) ** 2
-            mf = (1 - torch.exp(-squared_err.clamp(max=20.0)) + 1e-6) ** gamma
-            return torch.mean(squared_err * mf)
-        
-        def grad_magloss(pred, target):
-            def compute_gradients(x):
-                grad_x = x[:, :, 1:, :, :] - x[:, :, :-1, :, :]
-                grad_y = x[:, :, :, 1:, :] - x[:, :, :, :-1, :]
-                grad_z = x[:, :, :, :, 1:] - x[:, :, :, :, :-1]
-                return grad_x, grad_y, grad_z
-            pgrad, tgrad = compute_gradients(pred), compute_gradients(target)
-            loss = torch.tensor(0.0, device=pred.device, dtype=pred.dtype)
-            for pg, tg in zip(pgrad, tgrad):
-                loss = loss + F.mse_loss(pg, tg)
-            return loss
-        
+        def soft_dice_loss(pred, target, eps=1e-6):
+            p = pred.reshape(pred.size(0), -1)
+            t = target.reshape(target.size(0), -1)
+            
+            intersection = (p * t).sum(dim=1)
+            union = p.sum(dim=1) + t.sum(dim=1)
+            
+            dice = (2.0 * intersection + eps) / (union + eps)
+            return 1.0 - dice.mean()
+
         with torch.cuda.amp.autocast(enabled=False):
-            rec_masked = rec.float()
-            tdat_masked = tdat.unsqueeze(1).float() if tdat.dim() == 4 else tdat.float()
+            rec_f = rec.float()
+            tdat_f = tdat.unsqueeze(1).float() if tdat.dim() == 4 else tdat.float()
+            
             if tmsk is not None:
-                mask = tmsk.unsqueeze(1)
-                rec_masked = rec_masked * mask
-                tdat_masked = tdat_masked * mask
-            focal_mse_loss = 0*focal_mse(rec_masked, tdat_masked)
-            grad_loss = 0#grad_magloss(rec_masked, tdat_masked)
-            structloss = focal_mse_loss + 5 * grad_loss
-            return {'str_loss': structloss, 'focal_loss': focal_mse_loss, 'grad_loss': grad_loss}
+                mask = tmsk.unsqueeze(1).float()
+                rec_f = rec_f * mask
+                tdat_f = tdat_f * mask
+            pred_pos, target_pos = torch.relu(rec_f), torch.relu(tdat_f)
+            pred_neg, target_neg = torch.relu(-rec_f), torch.relu(-tdat_f)
+
+            pos_loss = soft_dice_loss(pred_pos, target_pos)
+            neg_loss = soft_dice_loss(pred_neg, target_neg)
+            
+            total_dice = (pos_loss + neg_loss) / 2.0
+
+            return {
+                'str_loss': total_dice, 
+                'pos_dice': pos_loss, 
+                'neg_dice': neg_loss
+            }
 
     def compute_adaptive_loss(self, raw_loss, index):
         log_var = self.loss_log_vars[index]
@@ -493,9 +496,9 @@ class EBPTLightning(pl.LightningModule):
         self.log('prec_mlm', prec0.detach(), sync_dist=True, batch_size=1)
         self.log('prec_dino', prec1.detach(), sync_dist=True, batch_size=1)
         self.log('prec_recon', prec2.detach(), sync_dist=True, batch_size=1)
-        #self.log('structure_loss', str_loss['str_loss'].detach(), sync_dist=True, batch_size=1)
-        #self.log('focal_mse', str_loss['focal_loss'].detach(), sync_dist=True, batch_size=1)
-        #self.log('gradient_mse', str_loss['grad_loss'].detach(), sync_dist=True, batch_size=1)
+        self.log('structure_loss', str_loss['str_loss'].detach(), sync_dist=True, batch_size=1)
+        self.log('focal_mse', str_loss['focal_loss'].detach(), sync_dist=True, batch_size=1)
+        self.log('gradient_mse', str_loss['grad_loss'].detach(), sync_dist=True, batch_size=1)
 
         self.step += 1
 
