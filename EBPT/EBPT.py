@@ -88,7 +88,7 @@ def compute_and_initialize_biases(
     }
 
 
-class EBPTLightning(pl.LightningModule):
+class SE3PLMLightning(pl.LightningModule):
     def __init__(self, 
                  learning_rate: float = 1e-3,
                  d_learning_rate: float = 5e-5,
@@ -143,7 +143,7 @@ class EBPTLightning(pl.LightningModule):
         self.num_prototypes = num_prototypes
         self.i = InteractionTokenBlock()
         self.b = VoxelizeTrunk()
-        self.step = 25001
+        self.step = 0#25001
         self.discriminator = PatchDiscriminator3D(in_channels=1)
         #self.register_buffer("prototype_center", torch.zeros(self.num_prototypes))
         self.register_buffer("queue", torch.zeros(queue_length, num_prototypes))
@@ -497,8 +497,8 @@ class EBPTLightning(pl.LightningModule):
         self.log('prec_dino', prec1.detach(), sync_dist=True, batch_size=1)
         self.log('prec_recon', prec2.detach(), sync_dist=True, batch_size=1)
         self.log('structure_loss', str_loss['str_loss'].detach(), sync_dist=True, batch_size=1)
-        self.log('focal_mse', str_loss['focal_loss'].detach(), sync_dist=True, batch_size=1)
-        self.log('gradient_mse', str_loss['grad_loss'].detach(), sync_dist=True, batch_size=1)
+        self.log('p_dice', str_loss['pos_dice'].detach(), sync_dist=True, batch_size=1)
+        self.log('b_dice', str_loss['neg_dice'].detach(), sync_dist=True, batch_size=1)
 
         self.step += 1
 
