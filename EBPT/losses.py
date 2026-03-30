@@ -1,13 +1,17 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
 import ot
+from einops import rearrange
 
 def Inverse_Norm_Scale(to_inv, max_val=4981.8994140625):
+    """Rescales normalized model output back to physical units."""
     return to_inv * max_val
 
 def loss_dirichlet_energy(ori, reconstruction):
+    """Computes the difference in Dirichlet energy (gradient smoothness) between volumes."""
     def compute_energy(voxel_grid):
+        # Differences along Depth, Height, and Width axes
         diff_d = voxel_grid[..., 1:, :, :] - voxel_grid[..., :-1, :, :]
         diff_h = voxel_grid[..., :, 1:, :] - voxel_grid[..., :, :-1, :]
         diff_w = voxel_grid[..., :, :, 1:] - voxel_grid[..., :, :, :-1]
@@ -20,126 +24,87 @@ def loss_dirichlet_energy(ori, reconstruction):
 
     energy_gt = compute_energy(ori)
     energy_pred = compute_energy(reconstruction)
+    
+    # Square root difference to stabilize the energy loss magnitude
     diff = torch.sqrt(torch.abs(energy_pred) + 1e-8) - torch.sqrt(torch.abs(energy_gt) + 1e-8)
     loss = torch.mean(diff ** 2)
 
     return torch.clamp(loss, min=1e-6, max=10000.0)
 
 def loss_topological_proxy(ori, reconstruction, num_slices=32, percentile_threshold=0.25):
+    """Uses 1D persistence-like peaks along axes and diagonals to enforce structural topology."""
     def get_1d_persistence(vol, dim_axis, num_samples):
         B, C, D, H, W = vol.shape
         
         if dim_axis == 2:
-            flat = vol.permute(0, 1, 3, 4, 2).reshape(B * C * H * W, D)
+            flat = vol.permute(0, 1, 3, 4, 2).reshape(-1, D)
         elif dim_axis == 3:
-            flat = vol.permute(0, 1, 2, 4, 3).reshape(B * C * D * W, H)
+            flat = vol.permute(0, 1, 2, 4, 3).reshape(-1, H)
         else:
-            flat = vol.permute(0, 1, 2, 3, 4).reshape(B * C * D * H, W)
+            flat = vol.reshape(-1, W)
         
         indices = torch.randperm(flat.size(0), device=flat.device)[:num_samples]
         rays = flat[indices]
-        del flat, indices
         
         threshold = torch.quantile(rays, percentile_threshold, dim=1, keepdim=True)
         dilated = F.max_pool1d(rays.unsqueeze(1), kernel_size=3, stride=1, padding=1).squeeze(1)
         is_peak = (rays == dilated) & (rays > threshold)
-        del dilated
         
         masked_rays = torch.where(is_peak, rays, -2 * torch.ones_like(rays))
-        del rays
-        
         sorted_peaks, _ = torch.sort(masked_rays, dim=1, descending=True)
-        del masked_rays
         
-        num_real_peaks = (is_peak.sum(dim=1)).max().item()
-        del is_peak
+        num_real_peaks = int(is_peak.sum(dim=1).max().item())
         k = min(max(int(num_real_peaks * 1.2), 5), 50)
-        
-        result = sorted_peaks[:, :k].clone()
-        del sorted_peaks
-        return result
-    
+        return sorted_peaks[:, :k].clone()
+
     def get_diagonal_persistence(vol, diagonal_type, num_samples):
         B, C, D, H, W = vol.shape
-        
         if diagonal_type == 'xy':
             min_size = min(D, H)
             diag_vol = torch.stack([vol[:, :, i, i, :] for i in range(min_size)], dim=2)
-            flat = diag_vol.reshape(B * C * W, min_size)
+            flat = diag_vol.reshape(-1, min_size)
         elif diagonal_type == 'xz':
             min_size = min(D, W)
             diag_vol = torch.stack([vol[:, :, i, :, i] for i in range(min_size)], dim=2)
-            flat = diag_vol.reshape(B * C * H, min_size)
-        else:
+            flat = diag_vol.reshape(-1, min_size)
+        else: # yz
             min_size = min(H, W)
             diag_vol = torch.stack([vol[:, :, :, i, i] for i in range(min_size)], dim=2)
-            flat = diag_vol.reshape(B * C * D, min_size)
+            flat = diag_vol.reshape(-1, min_size)
         
-        del diag_vol
         indices = torch.randperm(flat.size(0), device=flat.device)[:num_samples]
         rays = flat[indices]
-        del flat, indices
-        
         threshold = torch.quantile(rays, percentile_threshold, dim=1, keepdim=True)
         dilated = F.max_pool1d(rays.unsqueeze(1), kernel_size=3, stride=1, padding=1).squeeze(1)
         is_peak = (rays == dilated) & (rays > threshold)
-        del dilated
         
         masked_rays = torch.where(is_peak, rays, -2 * torch.ones_like(rays))
-        del rays
-        
         sorted_peaks, _ = torch.sort(masked_rays, dim=1, descending=True)
-        del masked_rays
         
-        num_real_peaks = (is_peak.sum(dim=1)).max().item()
-        del is_peak
+        num_real_peaks = int(is_peak.sum(dim=1).max().item())
         k = min(max(int(num_real_peaks * 1.2), 5), 50)
-        
-        result = sorted_peaks[:, :k].clone()
-        del sorted_peaks
-        return result
+        return sorted_peaks[:, :k].clone()
 
     loss_accum = 0.0
-    num_directions = 0
-    
     for axis in [2, 3, 4]:
-        peaks_gt = get_1d_persistence(ori, axis, num_slices // 2)
-        peaks_rec = get_1d_persistence(reconstruction, axis, num_slices // 2)
-        
-        max_k = max(peaks_gt.shape[1], peaks_rec.shape[1])
-        if peaks_gt.shape[1] < max_k:
-            peaks_gt = F.pad(peaks_gt, (0, max_k - peaks_gt.shape[1]), value=0.0)
-        if peaks_rec.shape[1] < max_k:
-            peaks_rec = F.pad(peaks_rec, (0, max_k - peaks_rec.shape[1]), value=0.0)
-        
-        loss_accum += F.mse_loss(peaks_rec, peaks_gt)
-        del peaks_gt, peaks_rec
-        num_directions += 1
+        p_gt = get_1d_persistence(ori, axis, num_slices // 2)
+        p_rec = get_1d_persistence(reconstruction, axis, num_slices // 2)
+        max_k = max(p_gt.shape[1], p_rec.shape[1])
+        loss_accum += F.mse_loss(F.pad(p_rec, (0, max_k - p_rec.shape[1])), F.pad(p_gt, (0, max_k - p_gt.shape[1])))
     
     for diag in ['xy', 'xz', 'yz']:
-        peaks_gt = get_diagonal_persistence(ori, diag, num_slices // 3)
-        peaks_rec = get_diagonal_persistence(reconstruction, diag, num_slices // 3)
-        
-        max_k = max(peaks_gt.shape[1], peaks_rec.shape[1])
-        if peaks_gt.shape[1] < max_k:
-            peaks_gt = F.pad(peaks_gt, (0, max_k - peaks_gt.shape[1]), value=0.0)
-        if peaks_rec.shape[1] < max_k:
-            peaks_rec = F.pad(peaks_rec, (0, max_k - peaks_rec.shape[1]), value=0.0)
-        
-        loss_accum += F.mse_loss(peaks_rec, peaks_gt)
-        del peaks_gt, peaks_rec
-        num_directions += 1
+        p_gt = get_diagonal_persistence(ori, diag, num_slices // 3)
+        p_rec = get_diagonal_persistence(reconstruction, diag, num_slices // 3)
+        max_k = max(p_gt.shape[1], p_rec.shape[1])
+        loss_accum += F.mse_loss(F.pad(p_rec, (0, max_k - p_rec.shape[1])), F.pad(p_gt, (0, max_k - p_gt.shape[1])))
 
-    return loss_accum / num_directions
+    return loss_accum / 6.0
 
 def loss_spectral(ori, rec):
-    fft_ori = torch.fft.rfftn(ori, dim=(-3, -2, -1))
-    fft_rec = torch.fft.rfftn(rec, dim=(-3, -2, -1))
-    
-    amp_ori = torch.abs(fft_ori)
-    amp_rec = torch.abs(fft_rec)
-    loss = F.l1_loss(torch.log(amp_rec + 1e-8), torch.log(amp_ori + 1e-8))    
-    return loss
+    """L1 loss on the log-amplitude of the Fourier Transform."""
+    fft_ori = torch.abs(torch.fft.rfftn(ori, dim=(-3, -2, -1)))
+    fft_rec = torch.abs(torch.fft.rfftn(rec, dim=(-3, -2, -1)))
+    return F.l1_loss(torch.log(fft_rec + 1e-8), torch.log(fft_ori + 1e-8))
 
 def wa_loss(ori, reconstruction, denorm=True, split_posneg=True, max_val=4981.8994140625):
     with torch.amp.autocast('cuda', enabled=False):
@@ -202,52 +167,21 @@ def wa_loss(ori, reconstruction, denorm=True, split_posneg=True, max_val=4981.89
         
         return accumulated_loss * scale_factor
 
-def seqs_to_tens(seqs):
-    seqdict = {
-        'A': 1, 'R': 2, 'N': 3, 'D': 4, 'C': 5, 'E': 6, 'Q': 7, 'G': 8,
-        'H': 9, 'I': 10, 'L': 11, 'K': 12, 'M': 13, 'F': 14, 'P': 15, 'S': 16,
-        'T': 17, 'W': 18, 'Y': 19, 'V': 20
-    }
-    olist = []
-    for s in seqs:
-        a = s.split('_')[0]
-        if(len(a) != 3):
-            olist.append(9000)
-            continue
-        uuid = seqdict.get(a[0], 40)*20**2 + seqdict.get(a[1], 40)*20 + seqdict.get(a[2], 40)
-        olist.append(uuid)
-    return torch.FloatTensor(olist).type(torch.float16)
-
-def contrastive_loss(z, labels, margin=5.0):
-    labels.extend(labels)
-    labels = seqs_to_tens(labels).to(z.device)
-
-    n = len(z)
-    if n < 2:
-        return torch.tensor(0.0, device=z.device, requires_grad=True)
-
-    idx = torch.triu_indices(n, n, offset=1, device=z.device)
-
-    z1 = z[idx[0]]
-    z2 = z[idx[1]]
-    lbls = (labels[idx[0]] == labels[idx[1]]).to(dtype=torch.float16, device=z.device)
-
-    dist = ot.sliced.sliced_wasserstein_distance(z1, z2, p=2)
-    pos_loss = lbls * dist.pow(2)
-    neg_loss = (1 - lbls) * F.relu(margin - dist).pow(2)
-
-    return (pos_loss + neg_loss).sum()
-
-def mi_loss(z, tmp = 0.01):
+def mi_loss(z, tmp=0.01):
+    """Mutual Information loss (InfoNCE) for latent vectors."""
     z = F.normalize(z, dim=1)
     sim = torch.matmul(z, z.T) / tmp
-    bs = z.size(0)
-    lbls = torch.arange(bs).to(z.device)    
-    return F.cross_entropy(sim, lbls, reduction='mean')
+    lbls = torch.arange(z.size(0), device=z.device)
+    return F.cross_entropy(sim, lbls)
 
-def merge_mask(rec, dat, projvec, mask=None):
+def merge_mask(rec, dat, mask=None):
+    """Combined MSE and Wasserstein loss, with optional spatial masking."""
     if mask is not None:
         mask = mask.unsqueeze(1)
         dat = dat * mask
-        dat[mask == 0] = 0
-    return F.mse_loss(Inverse_Norm_Scale(rec.float()), Inverse_Norm_Scale(dat.float()), reduction = 'mean') + wa_loss(rec.float(), dat, projvec)
+        # We don't hard-zero the reconstruction here to allow the model to learn 
+        # the boundary, but the loss is computed on the masked target.
+    
+    mse = F.mse_loss(Inverse_Norm_Scale(rec.float()), Inverse_Norm_Scale(dat.float()))
+    wa = wa_loss(rec.float(), dat.float(), denorm=False)
+    return mse + wa
