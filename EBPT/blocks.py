@@ -3,6 +3,95 @@ import torch.nn as nn
 import torch.nn.functional as F
 from se3cnn.image.convolution import SE3Convolution
 
+class RotaryPositionalEmbedding(nn.Module):
+    def __init__(self, dim, max_seq_len=8192, theta=10000.0):
+        super().__init__()
+        self.dim = dim
+        self.theta = theta
+        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("freqs", freqs)
+        self.cache = None
+
+    def forward(self, x):
+        seq_len = x.shape[1]
+        if self.cache is None or seq_len > self.cache.shape[0]:
+            t = torch.arange(seq_len, device=x.device, dtype=self.freqs.dtype)
+            freqs = torch.outer(t, self.freqs)
+            emb = torch.cat((freqs, freqs), dim=-1)
+            self.cache = torch.stack([emb.cos(), emb.sin()], dim=-1)
+        return self.cache[:seq_len].to(dtype=x.dtype)
+
+def apply_rotary_pos_emb(x, sincos):
+    cos = sincos[..., 0].unsqueeze(0).unsqueeze(2)
+    sin = sincos[..., 1].unsqueeze(0).unsqueeze(2)
+    x1 = x[..., 0::2]
+    x2 = x[..., 1::2]
+    x_rotated = torch.stack([-x2, x1], dim=-1).flatten(-2)
+    x_original = torch.stack([x1, x2], dim=-1).flatten(-2)
+    return (x_original * cos) + (x_rotated * sin)
+
+class RoPEMultiheadAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads, dropout=0.1):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        assert self.head_dim * num_heads == embed_dim
+        
+        self.q_proj = nn.Linear(embed_dim, embed_dim)
+        self.k_proj = nn.Linear(embed_dim, embed_dim)
+        self.v_proj = nn.Linear(embed_dim, embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        
+        self.dropout_p = dropout
+        self.resid_dropout = nn.Dropout(dropout)
+        self.rope = RotaryPositionalEmbedding(self.head_dim)
+
+    def forward(self, x, mask=None):
+        B, L, D = x.shape
+        
+        q = self.q_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        
+        sincos = self.rope(q)
+        q = apply_rotary_pos_emb(q, sincos)
+        k = apply_rotary_pos_emb(k, sincos)
+
+        out = F.scaled_dot_product_attention(
+            q, k, v, 
+            attn_mask=mask, 
+            dropout_p=self.dropout_p if self.training else 0.0, 
+            is_causal=False
+        )
+        
+        out = out.to(dtype=x.dtype)
+        out = out.transpose(1, 2).contiguous().view(B, L, self.embed_dim)
+        return self.resid_dropout(self.out_proj(out))
+
+class RoPETransformerLayer(nn.Module):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1):
+        super().__init__()
+        self.self_attn = RoPEMultiheadAttention(d_model, nhead, dropout=dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.feed_forward = nn.Sequential(
+            nn.Linear(d_model, dim_feedforward),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim_feedforward, d_model),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x):
+        x_norm = self.norm1(x)
+        attn_out = self.self_attn(x_norm)
+        x = x + attn_out
+        x_norm = self.norm2(x)
+        ff_out = self.feed_forward(x_norm)
+        x = x + ff_out
+        return x
+
 class ConvolutionalSelfAttention3d(nn.Module):
     def __init__(self, in_ch, dimprod, scale_reduce=None):
         super().__init__()
