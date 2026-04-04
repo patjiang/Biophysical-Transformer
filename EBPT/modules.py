@@ -104,7 +104,25 @@ class DepthwiseSeparableConv3d(nn.Module):
         self.pointwise = nn.Conv3d(in_ch, out_ch, kernel_size=1)
     def forward(self, x):
         return self.pointwise(self.depthwise(x))
+        
+class InteractionTokenBlock(nn.Module):
+    def __init__(self, d_model=64, n_tokens=16, n_heads=2):
+        super().__init__()
+        self.tokens = nn.Parameter(torch.randn(1, n_tokens, d_model))
+        self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, d_model * 2),
+            nn.GELU(),
+            nn.Linear(d_model * 2, d_model)
+        )
 
+    def forward(self, z):
+        B, L, C = z.shape
+        t = self.tokens.expand(B, -1, -1)
+        t, _ = self.attn(t, z, z)
+        z, _ = self.attn(z, t, t)
+        return self.ff(z)
+        
 class VoxelizeTrunk(nn.Module):
     def __init__(self, context_dim=64, tot_layers=3):
         super().__init__()
