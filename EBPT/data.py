@@ -477,3 +477,33 @@ def pre_process_and_save(dataset, output_dir):
         }
         
         torch.save(processed_payload, os.path.join(output_dir, f"{pdbid}.pt"))
+
+class MLMCollate:
+    def __init__(self, mask=True, device='cpu'):
+        self.mask = mask
+        self.device = device
+
+    def __call__(self, batch):
+        samples = []
+        for item in batch:
+            eat = item['cdat']
+            cmsk = item['cmsk']
+            seqs = item['seqs']
+            
+            seq_tensor = seqs_to_tens(seqs).unsqueeze(0).to(self.device)
+            eat = eat.to(self.device)
+            cmsk = cmsk.to(self.device)
+
+            if self.mask:
+                masked_seqs, mlm_labels = apply_mlm_masking(seq_tensor, device=self.device)
+                samples.append((
+                    eat,
+                    masked_seqs,
+                    mlm_labels,
+                    cmsk,
+                    seq_tensor
+                ))
+            else:
+                samples.append((eat, seq_tensor, cmsk))
+        
+        return samples
