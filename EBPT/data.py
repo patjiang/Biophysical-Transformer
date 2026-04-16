@@ -6,6 +6,7 @@ from collections import defaultdict
 import numpy as np
 import random
 from itertools import chain
+from tqdm import tqdm
 
 PAD_TOKEN_ID = 8000
 MASK_TOKEN_ID = 8001
@@ -446,7 +447,7 @@ class ChainedDataLoader:
 def pre_process_and_save(dataset, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     
-    for i in range(len(dataset)):
+    for i in tqdm(range(len(dataset))):
         data = dataset[i]
         if not data or 'ord' not in data:
             continue
