@@ -6,8 +6,9 @@ from data import BiophysicalRepresentation, pre_process_and_save
 
 def run_preprocessing():
     device = 'cpu'
-    in_dir = '../../data/kstruct_pt'
-    env_dir = '../../data/kstruct_env_pt'
+    base ='../full_3structs_pt'
+    env ='../3struct_env_pt'
+
     
     parent_dir = os.path.dirname(os.path.normpath(in_dir))
     output_dir = os.path.join(parent_dir, 'preproced')
