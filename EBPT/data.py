@@ -7,6 +7,7 @@ import numpy as np
 import random
 from itertools import chain
 from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 PAD_TOKEN_ID = 8000
 MASK_TOKEN_ID = 8001
@@ -443,7 +444,7 @@ class ChainedDataLoader:
     
     def __iter__(self):
         return chain.from_iterable(DataLoader(self.dataset, **self.dataloader_kwargs))
-
+"""
 def pre_process_and_save(dataset, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     
@@ -478,6 +479,54 @@ def pre_process_and_save(dataset, output_dir):
         }
         
         torch.save(processed_payload, os.path.join(output_dir, f"{pdbid}.pt"))
+"""
+
+def process_single_item(i, dataset, output_dir):
+    data = dataset[i]
+    if not data or 'ord' not in data:
+        return
+    
+    pdbid = data['ori'][0]
+    save_path = os.path.join(output_dir, f"{pdbid}.pt")
+    
+    if os.path.exists(save_path):
+        return
+
+    ords = copy.deepcopy(data['ord'])
+    ords.sort()
+    get_indexes = [data['ord'].index(x) for x in ords]
+    
+    tdat = torch.stack([data['atompot'][ind][0] for ind in get_indexes])
+    cdat = torch.stack([data['atompot'][ind][1] for ind in get_indexes])
+    seqs = [data['seq'][ind] for ind in get_indexes]
+    tmsk = torch.stack([data['mask'][ind][0] for ind in get_indexes])
+    cmsk = torch.stack([data['mask'][ind][1] for ind in get_indexes])
+    
+    processed_payload = {
+        'tdat': tdat.to(torch.float16),
+        'cdat': cdat.to(torch.float16),
+        'seqs': seqs,
+        'tmsk': tmsk.to(torch.float16),
+        'cmsk': cmsk.to(torch.float16),
+        'pdbid': pdbid,
+        'chain': data.get('chain', []),
+        'metadata': {
+            'minmax': data.get('minmax', None),
+            'original_index_order': ords
+        }
+    }
+    
+    torch.save(processed_payload, save_path)
+
+def pre_process_and_save(dataset, output_dir, max_workers=os.cpu_count()):
+    os.makedirs(output_dir, exist_ok=True)
+    
+    indices = range(len(dataset))
+    
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(process_single_item, i, dataset, output_dir) for i in indices]
+        for _ in tqdm(as_completed(futures), total=len(indices)):
+            pass
 
 class MLMCollate:
     def __init__(self, mask=True, device='cpu'):
