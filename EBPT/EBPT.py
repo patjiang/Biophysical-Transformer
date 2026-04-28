@@ -383,7 +383,8 @@ class SE3PLMLightning(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         if batch is None:
             return None
-
+        for b in batch:
+            b.to('cuda')
         N_ACC = 16
         opts = self.optimizers()
         opt_g = opts[0]
@@ -499,7 +500,10 @@ class SE3PLMLightning(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         if batch is None:
             return None
-
+        
+        for b in batch:
+            b.to('cuda')
+            
         tdat, seqs, _ = batch
         seqs = self.preprocess_sequence(seqs)
         z, rec = self.forward(seqs)
