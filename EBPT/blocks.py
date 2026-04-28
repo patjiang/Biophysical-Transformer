@@ -3,95 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from se3cnn.image.convolution import SE3Convolution
 
-class RotaryPositionalEmbedding(nn.Module):
-    def __init__(self, dim, max_seq_len=8192, theta=10000.0):
-        super().__init__()
-        self.dim = dim
-        self.theta = theta
-        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
-        self.register_buffer("freqs", freqs)
-        self.cache = None
-
-    def forward(self, x):
-        seq_len = x.shape[1]
-        if self.cache is None or seq_len > self.cache.shape[0]:
-            t = torch.arange(seq_len, device=x.device, dtype=self.freqs.dtype)
-            freqs = torch.outer(t, self.freqs)
-            emb = torch.cat((freqs, freqs), dim=-1)
-            self.cache = torch.stack([emb.cos(), emb.sin()], dim=-1)
-        return self.cache[:seq_len].to(dtype=x.dtype)
-
-def apply_rotary_pos_emb(x, sincos):
-    cos = sincos[..., 0].unsqueeze(0).unsqueeze(2)
-    sin = sincos[..., 1].unsqueeze(0).unsqueeze(2)
-    x1 = x[..., 0::2]
-    x2 = x[..., 1::2]
-    x_rotated = torch.stack([-x2, x1], dim=-1).flatten(-2)
-    x_original = torch.stack([x1, x2], dim=-1).flatten(-2)
-    return (x_original * cos) + (x_rotated * sin)
-
-class RoPEMultiheadAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads, dropout=0.1):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_dim = embed_dim // num_heads
-        assert self.head_dim * num_heads == embed_dim
-        
-        self.q_proj = nn.Linear(embed_dim, embed_dim)
-        self.k_proj = nn.Linear(embed_dim, embed_dim)
-        self.v_proj = nn.Linear(embed_dim, embed_dim)
-        self.out_proj = nn.Linear(embed_dim, embed_dim)
-        
-        self.dropout_p = dropout
-        self.resid_dropout = nn.Dropout(dropout)
-        self.rope = RotaryPositionalEmbedding(self.head_dim)
-
-    def forward(self, x, mask=None):
-        B, L, D = x.shape
-        
-        q = self.q_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
-        
-        sincos = self.rope(q)
-        q = apply_rotary_pos_emb(q, sincos)
-        k = apply_rotary_pos_emb(k, sincos)
-
-        out = F.scaled_dot_product_attention(
-            q, k, v, 
-            attn_mask=mask, 
-            dropout_p=self.dropout_p if self.training else 0.0, 
-            is_causal=False
-        )
-        
-        out = out.to(dtype=x.dtype)
-        out = out.transpose(1, 2).contiguous().view(B, L, self.embed_dim)
-        return self.resid_dropout(self.out_proj(out))
-
-class RoPETransformerLayer(nn.Module):
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1):
-        super().__init__()
-        self.self_attn = RoPEMultiheadAttention(d_model, nhead, dropout=dropout)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.feed_forward = nn.Sequential(
-            nn.Linear(d_model, dim_feedforward),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(dim_feedforward, d_model),
-            nn.Dropout(dropout)
-        )
-
-    def forward(self, x):
-        x_norm = self.norm1(x)
-        attn_out = self.self_attn(x_norm)
-        x = x + attn_out
-        x_norm = self.norm2(x)
-        ff_out = self.feed_forward(x_norm)
-        x = x + ff_out
-        return x
-
 class ConvolutionalSelfAttention3d(nn.Module):
     def __init__(self, in_ch, dimprod, scale_reduce=None):
         super().__init__()
@@ -121,7 +32,6 @@ class ConvolutionalSelfAttention3d(nn.Module):
     def forward(self, x):
         q, k, v = self.dw_conv(x), self.dw_conv(x), self.dw_conv(x)
         q, k = self.pw_conv_1(q), self.pw_conv_1(k)
-        # Spatial correlation proxy
         k = k.flatten(start_dim=1).T.reshape(q.shape)
         qk = self.pw_conv_2((q * k))
         qkv = v * qk
@@ -135,14 +45,11 @@ class SE3ConvolutionalSelfAttention3d(nn.Module):
         self.vector_ch = vector_ch
         self.Rs_in = [(scalar_ch, 0), (vector_ch, 1)]
         self.Rs_qk = [(dimprod_scalar, 0), (dimprod_vector, 1)]
-        
         self.dw_conv_q = SE3Convolution(Rs_in=self.Rs_in, Rs_out=self.Rs_in, size=5, padding=2)
         self.dw_conv_k = SE3Convolution(Rs_in=self.Rs_in, Rs_out=self.Rs_in, size=5, padding=2)
         self.dw_conv_v = SE3Convolution(Rs_in=self.Rs_in, Rs_out=self.Rs_in, size=5, padding=2)
-        
         self.pw_conv_q = SE3Convolution(Rs_in=self.Rs_in, Rs_out=self.Rs_qk, size=1)
         self.pw_conv_k = SE3Convolution(Rs_in=self.Rs_in, Rs_out=self.Rs_qk, size=1)
-        
         Rs_gate_in = self.Rs_qk + self.Rs_qk 
         self.pw_conv_gate = nn.Sequential(
             SE3Convolution(
@@ -152,7 +59,6 @@ class SE3ConvolutionalSelfAttention3d(nn.Module):
             ),
             nn.Sigmoid()
         )
-        
         Rs_ffn_hidden = [(scalar_ch * 3, 0), (vector_ch * 3, 1)]
         self.pw_conv_ffn = nn.Sequential(
             SE3Convolution(Rs_in=self.Rs_in, Rs_out=Rs_ffn_hidden, size=1),
@@ -163,53 +69,42 @@ class SE3ConvolutionalSelfAttention3d(nn.Module):
         feat_q = self.dw_conv_q(x)
         feat_k = self.dw_conv_k(x)
         feat_v = self.dw_conv_v(x)
-        
         q = self.pw_conv_q(feat_q)
         k = self.pw_conv_k(feat_k)
-        
         qk_concat = torch.cat([q, k], dim=1)
         gate = self.pw_conv_gate(qk_concat)
-        
         scalar_gate = gate[:, :self.scalar_ch]
         vector_gate = gate[:, self.scalar_ch:]
-        
         scalar_v = feat_v[:, :self.scalar_ch]
         gated_scalar_v = scalar_v * scalar_gate
-        
         vector_v = feat_v[:, self.scalar_ch:] 
         B, _, H, W, D = vector_v.shape
         vector_v_reshaped = vector_v.view(B, self.vector_ch, 3, H, W, D)
-        vector_gate_expanded = vector_gate.unsqueeze(2) # (B, vector_ch, 1, H, W, D)
-        
+        vector_gate_expanded = vector_gate.unsqueeze(2)
         gated_vector_v = (vector_v_reshaped * vector_gate_expanded).view(B, -1, H, W, D)
-        
         gated_v = torch.cat([gated_scalar_v, gated_vector_v], dim=1)
         out_feat = self.pw_conv_ffn(gated_v)
-        
         return x + out_feat
 
 class ConvFeedForward(nn.Module):
     def __init__(self, scalar_ch, vector_ch, ffn_mult, dropout):
-        super().__init__()
-        self.scalar_ch = scalar_ch
-        self.vector_ch = vector_ch
-        
         self.ffn_s = nn.Sequential(
-            nn.Conv3d(scalar_ch, scalar_ch * ffn_mult, 1),
+            nn.Conv3d(scalar_ch, scalar_ch*ffn_mult, 1),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Conv3d(scalar_ch * ffn_mult, scalar_ch, 1)
+            nn.Conv3d(scalar_ch*ffn_mult, scalar_ch, 1)
         )
         self.ffn_v = nn.Sequential(
-            nn.Conv3d(vector_ch * 3, vector_ch * 3 * ffn_mult, 1, groups=vector_ch),
-            nn.GELU(),
-            nn.Conv3d(vector_ch * 3 * ffn_mult, vector_ch * 3, 1, groups=vector_ch)
+            nn.Conv3d(vector_ch*3, vector_ch*3*ffn_mult, 1, groups=vector_ch),
+            nn.Conv3d(vector_ch*3*ffn_mult, vector_ch*3, 1, groups=vector_ch)
         )
-
-    def forward(self, x):
-        x_s = x[:, :self.scalar_ch]
-        x_v = x[:, self.scalar_ch:]
-        return torch.cat([self.ffn_s(x_s), self.ffn_v(x_v)], dim=1)
+        
+def FeedForward(dim, mult, dropout):
+    return nn.Sequential(
+        nn.Linear(dim, dim*mult),
+        nn.GELU(),
+        nn.Dropout(dropout),
+        nn.Linear(dim*mult, dim))
 
 class EquivariantFeedForward(nn.Module):
     def __init__(self, scalar_ch, vector_ch, mult=2, dropout=0.1):
@@ -218,37 +113,180 @@ class EquivariantFeedForward(nn.Module):
         self.vector_ch = vector_ch
         hidden_s = int(scalar_ch * mult)
         hidden_v = int(vector_ch * mult)
-        
         self.s_up = nn.Conv3d(scalar_ch, hidden_s, 1)
         self.s_down = nn.Conv3d(hidden_s, scalar_ch, 1)
         self.act = nn.GELU()
-        
         self.v_up_weight = nn.Parameter(torch.empty(hidden_v, vector_ch))
         self.v_down_weight = nn.Parameter(torch.empty(vector_ch, hidden_v))
         nn.init.kaiming_uniform_(self.v_up_weight, a=5**0.5)
         nn.init.kaiming_uniform_(self.v_down_weight, a=5**0.5)
-        
         self.gate_proj = nn.Conv3d(hidden_s, hidden_v, 1)
         self.dropout_s = nn.Dropout(dropout)
 
     def forward(self, x):
         x_s = x[:, :self.scalar_ch]
         x_v = x[:, self.scalar_ch:]
-        
-        # Scalar branch
         h_s = self.act(self.s_up(x_s))
-        
-        # Vector branch (Equivariant via Einstein Summation)
         B, _, D, H, W = x_v.shape
         x_v_view = x_v.view(B, self.vector_ch, 3, D, H, W)
         h_v = torch.einsum('bicdhw, oi -> bocdhw', x_v_view, self.v_up_weight)
-        
-        # Gated Linear Unit variant for vectors
         gates = torch.sigmoid(self.gate_proj(h_s))
         h_v_gated = h_v * gates.unsqueeze(2)
-        
         out_v_view = torch.einsum('bicdhw, oi -> bocdhw', h_v_gated, self.v_down_weight)
         out_v = out_v_view.reshape(B, self.vector_ch * 3, D, H, W)
-        
         out_s = self.s_down(h_s)
-        return torch.cat([self.dropout_s(out_s), out_v], dim=1)
+        out = torch.cat([self.dropout_s(out_s), out_v], dim=1)
+        
+        return out
+        
+class SE3Transformer(nn.Module):
+    def __init__(self, scalar_ch, vector_ch, dimprod_scalar, dimprod_vector,
+                 num_layers=1, ffn_mult=2, dropout=0.1):
+        super().__init__()
+        self.scalar_ch = scalar_ch
+        self.layers = nn.ModuleList()
+
+        for _ in range(num_layers):
+            self.layers.append(nn.ModuleDict({
+                'attn': SE3ConvolutionalSelfAttention3d(
+                    scalar_ch,
+                    vector_ch,
+                    dimprod_scalar,
+                    dimprod_vector
+                ),
+                'norm_s': nn.InstanceNorm3d(scalar_ch, affine=True),
+                'norm_v': nn.InstanceNorm3d(vector_ch * 3, affine=True),
+                'ffn': EquivariantFeedForward(
+                    scalar_ch,
+                    vector_ch,
+                    ffn_mult,
+                    dropout
+                )
+            }))
+
+    def forward(self, x):
+        def _layer_fwd(x, attn, ffn, norm_s, norm_v, s_ch):
+            x = attn(x)
+            x_s = norm_s(x[:, :s_ch])
+            x_v = norm_v(x[:, s_ch:])
+            x_normed = torch.cat([x_s, x_v], dim=1)
+            x = x + ffn(x_normed)
+            return x
+
+        for layer in self.layers:
+            args = (
+                x,
+                layer['attn'],
+                layer['ffn'],
+                layer['norm_s'],
+                layer['norm_v'],
+                self.scalar_ch
+            )
+
+            if self.training:
+                x = torch.utils.checkpoint.checkpoint(
+                    _layer_fwd, *args, use_reentrant=False
+                )
+            else:
+                x = _layer_fwd(*args)
+
+        return x
+
+
+class SE3CrossTransformer(nn.Module):
+    def __init__(self, scalar_ch, vector_ch, dimprod_scalar, dimprod_vector,
+                 context_dim, num_layers=1, n_heads=8, ffn_mult=2, dropout=0.1):
+        super().__init__()
+
+        self.scalar_ch = scalar_ch
+        self.total_ch = scalar_ch + vector_ch * 3
+        self.layers = nn.ModuleList()
+
+        for _ in range(num_layers):
+            self.layers.append(nn.ModuleDict({
+                'se3_self_attn': SE3ConvolutionalSelfAttention3d(
+                    scalar_ch,
+                    vector_ch,
+                    dimprod_scalar,
+                    dimprod_vector
+                ),
+                'norm_cross_s': nn.InstanceNorm3d(scalar_ch, affine=True),
+                'norm_cross_v': nn.InstanceNorm3d(vector_ch * 3, affine=True),
+                'mha': nn.MultiheadAttention(
+                    embed_dim=self.total_ch,
+                    kdim=context_dim,
+                    vdim=context_dim,
+                    num_heads=n_heads,
+                    batch_first=False
+                ),
+                'norm_ffn_s': nn.InstanceNorm3d(scalar_ch, affine=True),
+                'norm_ffn_v': nn.InstanceNorm3d(vector_ch * 3, affine=True),
+                'ffn': EquivariantFeedForward(
+                    scalar_ch,
+                    vector_ch,
+                    ffn_mult,
+                    dropout
+                )
+            }))
+
+    def forward(self, x, context):
+        def _layer_fwd(x, context, se3_attn, mha, ffn,
+                       norm_cs, norm_cv, norm_fs, norm_fv, s_ch):
+            B, C, D, H, W = x.shape
+
+            x = se3_attn(x)
+
+            x_s = norm_cs(x[:, :s_ch])
+            x_v = norm_cv(x[:, s_ch:])
+            x_normed = torch.cat([x_s, x_v], dim=1)
+
+            query = x_normed.flatten(2).permute(2, 0, 1)
+            mha_out, _ = mha(query, context, context)
+            mha_out = mha_out.permute(1, 2, 0).reshape(B, C, D, H, W)
+
+            x = x + mha_out
+
+            x_s = norm_fs(x[:, :s_ch])
+            x_v = norm_fv(x[:, s_ch:])
+            x_normed = torch.cat([x_s, x_v], dim=1)
+
+            x = x + ffn(x_normed)
+
+            return x
+
+        for layer in self.layers:
+            args = (
+                x,
+                context,
+                layer['se3_self_attn'],
+                layer['mha'],
+                layer['ffn'],
+                layer['norm_cross_s'],
+                layer['norm_cross_v'],
+                layer['norm_ffn_s'],
+                layer['norm_ffn_v'],
+                self.scalar_ch
+            )
+
+            if self.training:
+                x = torch.utils.checkpoint.checkpoint(
+                    _layer_fwd, *args, use_reentrant=False
+                )
+            else:
+                x = _layer_fwd(*args)
+
+        return x
+
+class DepthwiseSeparableConv3d(nn.Module):
+    def __init__(self, in_ch, out_ch, kernel_size=3, padding=1):
+        super().__init__()
+        self.depthwise = nn.Conv3d(
+            in_ch, in_ch, kernel_size=kernel_size,
+            padding=padding, groups=in_ch
+        )
+        self.pointwise = nn.Conv3d(in_ch, out_ch, kernel_size=1)
+
+    def forward(self, x):
+        x = self.depthwise(x)
+        x = self.pointwise(x)
+        return x
