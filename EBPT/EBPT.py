@@ -91,14 +91,14 @@ def compute_and_initialize_biases(
 class SE3PLMLightning(pl.LightningModule):
     def __init__(self, 
                  learning_rate: float = 1e-3,
-                 d_learning_rate: float = 5e-5,
+                 d_learning_rate: float = 5e-6,
                  weight_decay: float = 1e-5,
                  optimizer_type: str = "adam",
                  cyclic_lr: bool = True,
                  max_lr_factor: float = 100.0,
                  step_size_up: int = 1000,
                  lambda_wa: float = 5000.0,
-                 lambda_adv: float = 0.08,
+                 lambda_adv: float = 0.1,
                  lambda_dino: float = 0.1,
                  num_prototypes: int = 128,
                  teacher_momentum: float = 0.99,
@@ -143,14 +143,14 @@ class SE3PLMLightning(pl.LightningModule):
         self.num_prototypes = num_prototypes
         self.i = InteractionTokenBlock()
         self.b = VoxelizeTrunk()
-        self.step = 0#25001
+        self.step = 0#50001
         self.discriminator = PatchDiscriminator3D(in_channels=1)
         #self.register_buffer("prototype_center", torch.zeros(self.num_prototypes))
         self.register_buffer("queue", torch.zeros(queue_length, num_prototypes))
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
         self.queue_length = queue_length
         
-        self.center_momentum = 0.9
+        self.center_momentum = 0.99
         self.student_temp = 0.15
         self.teacher_temp = 0.07
         self.loss_log_vars = nn.Parameter(torch.tensor([2.2, 1.6, 3.2]))
@@ -268,18 +268,25 @@ class SE3PLMLightning(pl.LightningModule):
                 mask = tmsk.unsqueeze(1).float()
                 rec_f = rec_f * mask
                 tdat_f = tdat_f * mask
+                
             pred_pos, target_pos = torch.relu(rec_f), torch.relu(tdat_f)
             pred_neg, target_neg = torch.relu(-rec_f), torch.relu(-tdat_f)
 
             pos_loss = soft_dice_loss(pred_pos, target_pos)
             neg_loss = soft_dice_loss(pred_neg, target_neg)
             
-            total_dice = (pos_loss + neg_loss) / 2.0
+            raw_total_dice = (pos_loss + neg_loss) / 2.0
+
+            dice_weight = 0.01
+
+            weighted_str_loss = raw_total_dice * dice_weight
 
             return {
-                'str_loss': total_dice, 
+                'str_loss': weighted_str_loss,
+                'raw_str_loss': raw_total_dice,
                 'pos_dice': pos_loss, 
-                'neg_dice': neg_loss
+                'neg_dice': neg_loss,
+                'dice_weight': dice_weight
             }
 
     def compute_adaptive_loss(self, raw_loss, index):
@@ -302,7 +309,7 @@ class SE3PLMLightning(pl.LightningModule):
             wa_loss_val = self.lambda_wa * wa_loss(rec_masked, tdat_masked, denorm=False)
             spatial_loss = mae_loss + wa_loss_val
             
-            if(self.step > 25000):
+            if(self.step > 50000):
                 self.discriminator.eval()
                 d_fake = self.discriminator(rec_masked)
                 self.discriminator.train()
@@ -310,7 +317,7 @@ class SE3PLMLightning(pl.LightningModule):
             else:
                 adv_loss = 0.0
             
-            recon_loss = spatial_loss + adv_loss
+            recon_loss = spatial_loss# + adv_loss
             
             return {
                 'mae_loss': mae_loss,
@@ -324,20 +331,26 @@ class SE3PLMLightning(pl.LightningModule):
         with torch.cuda.amp.autocast(enabled=False):
             rec_masked = rec.float()
             tdat_masked = tdat.unsqueeze(1).float() if tdat.dim() == 4 else tdat.float()
-            
+            noise_std = max(0.001, 0.1 - (self.step / 500000) * 0.1)
             if tmsk is not None:
                 mask = tmsk.unsqueeze(1)
                 rec_masked = rec_masked * mask
                 tdat_masked = tdat_masked * mask
             
             tdat_masked.requires_grad_(True)
-            
-            d_real = self.discriminator(tdat_masked)
-            d_fake = self.discriminator(rec_masked.detach())
-            
+            if noise_std > 0:
+                real_noise = torch.randn_like(tdat_masked) * noise_std
+                fake_noise = torch.randn_like(rec_masked) * noise_std
+                
+                d_real = self.discriminator(tdat_masked + real_noise)
+                d_fake = self.discriminator(rec_masked.detach() + fake_noise)
+            else:
+                d_real = self.discriminator(tdat_masked)
+                d_fake = self.discriminator(rec_masked.detach())
+                
             d_real = torch.clamp(d_real, min=-1000.0, max=1000.0)
             d_fake = torch.clamp(d_fake, min=-1000.0, max=1000.0)
-            
+        
             if torch.isnan(d_real).any() or torch.isinf(d_real).any():
                 print(f"\nFATAL: d_real contains NaN/Inf! Max: {d_real.max()}, Min: {d_real.min()}")
                 for name, p in self.discriminator.named_parameters():
@@ -407,7 +420,7 @@ class SE3PLMLightning(pl.LightningModule):
         full_seqs = self.preprocess_sequence(full_seqs)
         z, rec = self.forward(masked_seqs)
         
-        if(self.step > 25000):
+        if(self.step > 50000):
             d_losses = self.compute_discriminator_losses(rec, tdat, None)
             #if torch.isnan(val).any() or torch.isinf(val).any():
             #        print(f"\nFATAL: Discriminator '{key}' became NaN/Inf!")
@@ -417,7 +430,7 @@ class SE3PLMLightning(pl.LightningModule):
             self.manual_backward(d_losses['d_loss'] / (N_ACC // 2))
 
             if (batch_idx + 1) % (N_ACC // 2) == 0:
-                self.clip_gradients(opt_d, gradient_clip_val=6.0, gradient_clip_algorithm="norm")
+                self.clip_gradients(opt_d, gradient_clip_val=2.0, gradient_clip_algorithm="norm")
                 opt_d.step()
             self.log('train_full_d_loss', d_losses['d_loss'].detach(), sync_dist=True)
             self.log('train_real_d_loss', d_losses['d_loss_real'].detach(), sync_dist=True)
@@ -438,7 +451,7 @@ class SE3PLMLightning(pl.LightningModule):
         dino_loss = self.compute_dino_loss(z, full_seqs)
 
         g_losses = self.compute_generator_losses(rec, tdat, None)
-        if(self.step > 25000):
+        if(self.step > 50000):
             self.log('train_adv_loss', g_losses['adv_loss'].detach(), sync_dist=True, batch_size=1)
         else:
             self.log('train_adv_loss', g_losses['adv_loss'], sync_dist=True, batch_size=1)
@@ -452,7 +465,7 @@ class SE3PLMLightning(pl.LightningModule):
         final_recon, prec2 = self.compute_adaptive_loss(raw_recon_loss, 2)
         
 
-        total_g_loss = 5 * final_mlm + final_dino + final_recon + structure_loss
+        total_g_loss = (5 * final_mlm) + final_dino + final_recon + structure_loss + g_losses['adv_loss']
 
         check_nan(z, "encoder output z")
         check_nan(rec, "reconstruction rec")
@@ -496,10 +509,9 @@ class SE3PLMLightning(pl.LightningModule):
         self.log('prec_mlm', prec0.detach(), sync_dist=True, batch_size=1)
         self.log('prec_dino', prec1.detach(), sync_dist=True, batch_size=1)
         self.log('prec_recon', prec2.detach(), sync_dist=True, batch_size=1)
-        self.log('structure_loss', str_loss['str_loss'].detach(), sync_dist=True, batch_size=1)
+        self.log('structure_loss', str_loss['raw_str_loss'].detach(), sync_dist=True, batch_size=1)
         self.log('p_dice', str_loss['pos_dice'].detach(), sync_dist=True, batch_size=1)
         self.log('b_dice', str_loss['neg_dice'].detach(), sync_dist=True, batch_size=1)
-
         self.step += 1
 
 
@@ -515,7 +527,7 @@ class SE3PLMLightning(pl.LightningModule):
         raw_recon_loss = g_losses['recon_loss']
         
         weighted_recon_loss, _ = self.compute_adaptive_loss(raw_recon_loss, 2)
-        if(self.step > 25000):
+        if(self.step > 50000):
             self.log('val_adv_loss', g_losses['adv_loss'].detach(), sync_dist=True)
         else:
             self.log('val_adv_loss', g_losses['adv_loss'], prog_bar=False, sync_dist=True)
@@ -540,18 +552,25 @@ class SE3PLMLightning(pl.LightningModule):
     def configure_optimizers(self):
         g_params = [p for n, p in self.named_parameters() if 'discriminator' not in n and 'teacher' not in n]
         d_params = self.discriminator.parameters()
-        
         if self.hparams.optimizer_type.lower() == "adam":
-            opt_g = torch.optim.Adam(g_params, lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay)
-            opt_d = torch.optim.Adam(d_params, lr=self.hparams.d_learning_rate, weight_decay=self.hparams.weight_decay, betas=(0.5, 0.9), eps=1e-4)
+            opt_g = torch.optim.Adam(g_params, lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay, betas=(0.0, 0.99))
+            opt_d = torch.optim.Adam(d_params, lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay, betas=(0.0, 0.99), eps=1e-4)
         elif self.hparams.optimizer_type.lower() == "adamw":
-            opt_g = torch.optim.AdamW(g_params, lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay)
-            opt_d = torch.optim.AdamW(d_params, lr=self.hparams.d_learning_rate, weight_decay=self.hparams.weight_decay, eps=1e-4)
+            opt_g = torch.optim.AdamW(g_params, lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay, betas=(0.0, 0.99))
+            opt_d = torch.optim.AdamW(d_params, lr=self.hparams.learning_rate, weight_decay=self.hparams.weight_decay, betas=(0.0, 0.99), eps=1e-4)
         else:
             raise ValueError(f"Unknown optimizer: {self.hparams.optimizer_type}")
         
         if self.hparams.cyclic_lr:
-            sched_g = torch.optim.lr_scheduler.CyclicLR(opt_g, step_size_up=self.hparams.step_size_up, base_lr=self.hparams.learning_rate, max_lr=self.hparams.learning_rate * self.hparams.max_lr_factor, mode='exp_range', gamma=0.9999, cycle_momentum=False)
+            sched_g = torch.optim.lr_scheduler.CyclicLR(
+                opt_g, 
+                step_size_up=self.hparams.step_size_up, 
+                base_lr=self.hparams.learning_rate, 
+                max_lr=self.hparams.learning_rate * self.hparams.max_lr_factor, 
+                mode='exp_range', 
+                gamma=0.9999, 
+                cycle_momentum=False
+            )
             return [opt_g, opt_d], [{"scheduler": sched_g, "interval": "step"}]
         else:
             sched_g = torch.optim.lr_scheduler.CosineAnnealingLR(opt_g, T_max=50, eta_min=1e-8)
