@@ -383,6 +383,7 @@ class SE3PLMLightning(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         if batch is None:
             return None
+        batch = batch[0]
         for b in batch:
             b.to('cuda')
         N_ACC = 16
@@ -500,7 +501,7 @@ class SE3PLMLightning(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         if batch is None:
             return None
-        
+        batch = batch[0]
         for b in batch:
             b.to('cuda')
             
