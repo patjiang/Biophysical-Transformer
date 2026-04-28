@@ -13,27 +13,35 @@ torch.autograd.set_detect_anomaly(True)
 NUM_WORKERS = 24
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-train_dataset = PreprocessedBiophysicalDataset(preprocessed_dir="path/to/your/output_dir")
-collate_fn = MLMCollate(mask=True, device='cuda') 
+TRAIN_DIR = '../../data/kstruct_pt_preprocessed/train' 
+VAL_DIR = '../../data/kstruct_pt_preprocessed/val'
+
+train_dataset = PreprocessedBiophysicalDataset(TRAIN_DIR)
+vali_dataset = PreprocessedBiophysicalDataset(VAL_DIR)
+
 train_loader = DataLoader(
-    train_dataset,
-    batch_size=1,
+    train_dataset, 
+    batch_size=1, 
+    num_workers=NUM_WORKERS, 
+    collate_fn=MLMCollate(mask=True, device='cpu'), 
     shuffle=True,
-    collate_fn=collate_fn,
-    num_workers=4
+    pin_memory=True
 )
 
-train_dataset = BiophysicalRepresentation('../../data/kstruct_pt', device, [0,5000], '../../data/kstruct_env_pt')
-vali_dataset = BiophysicalRepresentation('../../data/kstruct_pt', device, [5000,-1], '../../data/kstruct_env_pt')
-train_loader = ChainedDataLoader(train_dataset, batch_size=1, num_workers=NUM_WORKERS, collate_fn=env_collate(mask=True), shuffle=True)
-vali_loader = ChainedDataLoader(vali_dataset, batch_size=1, num_workers=NUM_WORKERS//2, collate_fn=env_collate(mask=False))
+vali_loader = DataLoader(
+    vali_dataset, 
+    batch_size=1, 
+    num_workers=NUM_WORKERS // 2, 
+    collate_fn=MLMCollate(mask=False, device='cpu'),
+    pin_memory=True
+)
 
 SAVE_DIR = "chkpts"
 MAX_EPOCHS = 200
 BASE_LR = 1e-5
 MAX_LR_FACTOR = 10.0
 STEP_SIZE_UP = 5000
-LAMBDA_WA = 5.0#5000.0
+LAMBDA_WA = 5.0
 
 torch.set_float32_matmul_precision('medium')
 
@@ -47,7 +55,7 @@ checkpoint_cb = ModelCheckpoint(
 
 checkpoint_last = ModelCheckpoint(
     dirpath=SAVE_DIR,
-    filename="last_{epoch:02d}",
+    filename="gan_{epoch:02d}",
     save_top_k=1,
     monitor="epoch",
     mode="max",
@@ -57,16 +65,13 @@ lr_monitor_cb = LearningRateMonitor(logging_interval="step")
 
 model = SE3PLMLightning(
     learning_rate=BASE_LR,
-    weight_decay=1e-7,
+    weight_decay=1e-6,
     optimizer_type="adam",
     cyclic_lr=True,
     max_lr_factor=MAX_LR_FACTOR,
     step_size_up=STEP_SIZE_UP,
     lambda_wa=LAMBDA_WA,
 )
-#model = SE3PLMLightning.load_from_checkpoint('chkpts/last_epoch=04.ckpt')
-
-#swa_callback = StochasticWeightAveraging(swa_lrs=BASE_LR * 0.1, swa_epoch_start=0.75)
 
 def setup_loggers(save_dir):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -74,22 +79,21 @@ def setup_loggers(save_dir):
     csv_logger = CSVLogger(save_dir=save_dir, name="csv_logs", version=timestamp)
     return [tb_logger, csv_logger]
 
-loggers = setup_loggers('chkpts')
+loggers = setup_loggers(SAVE_DIR)
 
 trainer = pl.Trainer(
     max_epochs=MAX_EPOCHS,
     accelerator="auto",
     devices="auto",
     default_root_dir=SAVE_DIR,
-    callbacks=[checkpoint_cb, checkpoint_last, lr_monitor_cb],# swa_callback],
+    callbacks=[checkpoint_cb, checkpoint_last, lr_monitor_cb],
     precision='16-mixed',
     log_every_n_steps=1,
-    #gradient_clip_val=2.0,
     logger=loggers,
-    #accumulate_grad_batches=32,
     strategy='ddp_find_unused_parameters_true',
     profiler="simple"
 )
 
 print(summary(model))
+trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=vali_loader)
 trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=vali_loader)
