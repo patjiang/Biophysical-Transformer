@@ -557,3 +557,16 @@ class MLMCollate:
                 samples.append((eat, seq_tensor, cmsk))
         
         return samples
+
+class PreprocessedBiophysicalDataset(Dataset):
+    """Loads pre-computed biophysical tensors directly from disk."""
+    def __init__(self, preprocessed_dir):
+        self.preprocessed_dir = preprocessed_dir
+        self.files = [f for f in os.listdir(preprocessed_dir) if f.endswith('.pt')]
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx):
+        file_path = os.path.join(self.preprocessed_dir, self.files[idx])
+        return torch.load(file_path, weights_only=False)
