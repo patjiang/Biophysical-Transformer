@@ -155,25 +155,6 @@ class SE3PLMLightning(pl.LightningModule):
         self.teacher_temp = 0.07
         self.loss_log_vars = nn.Parameter(torch.tensor([2.2, 1.6, 3.2]))
         
-    def on_train_start(self):
-        if not hasattr(self, '_biases_initialized'):
-            self._biases_initialized = False
-        if self._biases_initialized:
-            print("\n" + "="*60)
-            print("INITIALIZING BIASES FROM TRAINING DATA")
-            print("="*60 + "\n")
-            train_loader = self.trainer.train_dataloader
-            compute_and_initialize_biases(
-                train_loader=train_loader,
-                mlm_head=self.mlm_head,
-                convout_module = self.b.convout,
-                vocab_size=8003,
-                device=self.device
-            )
-            print("\n" + "="*60)
-            print("BIAS INITIALIZATION COMPLETE")
-            print("="*60 + "\n")
-            self._biases_initialized = True
             
     def forward(self, seq, pred=False):
         z = self.student_encoder(seq)
@@ -412,7 +393,7 @@ class SE3PLMLightning(pl.LightningModule):
         if batch_idx % (N_ACC // 2) == 0:
             opt_d.zero_grad()
 
-        tdat, masked_seqs, labels, _, full_seqs, _ = batch
+        tdat, masked_seqs, labels, _, full_seqs= batch
         labels = labels.view(-1)
         labels = torch.cat((torch.tensor([-100], dtype=torch.int64, device=labels.device), labels))
 
