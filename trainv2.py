@@ -13,8 +13,8 @@ torch.autograd.set_detect_anomaly(True)
 NUM_WORKERS = 24
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-TRAIN_DIR = '../../data/kstruct_pt_preprocessed/train' 
-VAL_DIR = '../../data/kstruct_pt_preprocessed/val'
+TRAIN_DIR = '../kstruct_pt_preprocessed/train' 
+VAL_DIR = '../kstruct_pt_preprocessed/val'
 
 train_dataset = PreprocessedBiophysicalDataset(TRAIN_DIR)
 vali_dataset = PreprocessedBiophysicalDataset(VAL_DIR)
