@@ -380,7 +380,7 @@ class PatchDiscriminator3D(nn.Module):
         return torch.cat(logits, dim=1)
 
 class PatchDiscriminator3D_sm(nn.Module):
-    def __init__(self, in_channels=1, num_scales=2):
+    def __init__(self, in_channels=1, num_scales=1):
         super().__init__()
         self.num_scales = num_scales
 
@@ -389,12 +389,6 @@ class PatchDiscriminator3D_sm(nn.Module):
                 nn.Conv3d(in_c,  32, 4, 2, 1, bias=True),
                 nn.LeakyReLU(0.2, inplace=True),
                 nn.Conv3d( 32,  64, 4, 2, 1, bias=False),
-                nn.InstanceNorm3d(64, affine=True),
-                nn.LeakyReLU(0.2, inplace=True),
-                nn.Conv3d( 64, 128, 4, 2, 1, bias=False),
-                nn.InstanceNorm3d(128, affine=True),
-                nn.LeakyReLU(0.2, inplace=True),
-                nn.Conv3d(128,  64, 3, 1, 1, bias=False),
                 nn.InstanceNorm3d(64, affine=True),
                 nn.LeakyReLU(0.2, inplace=True),
                 nn.Conv3d( 64,   1, 3, 1, 1),
