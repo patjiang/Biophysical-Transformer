@@ -10,7 +10,7 @@ from datetime import datetime
 from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
 
 torch.autograd.set_detect_anomaly(True)
-NUM_WORKERS = 24
+NUM_WORKERS = 30
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 TRAIN_DIR = '../kstruct_pt_preprocessed/train' 
