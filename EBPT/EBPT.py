@@ -11,6 +11,7 @@ from .modules import (
     InteractionTokenBlock,
     VoxelizeTrunk,
     PatchDiscriminator3D,
+    PatchDiscriminator3D_sm,
 )
 from .losses import wa_loss
 
