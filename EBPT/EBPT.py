@@ -144,7 +144,7 @@ class SE3PLMLightning(pl.LightningModule):
         self.i = InteractionTokenBlock()
         self.b = VoxelizeTrunk()
         self.step = 0#50001
-        self.discriminator = PatchDiscriminator3D(in_channels=1)
+        self.discriminator = PatchDiscriminator3D_sm(in_channels=1)
         #self.register_buffer("prototype_center", torch.zeros(self.num_prototypes))
         self.register_buffer("queue", torch.zeros(queue_length, num_prototypes))
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
