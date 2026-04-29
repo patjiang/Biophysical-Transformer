@@ -378,3 +378,35 @@ class PatchDiscriminator3D(nn.Module):
             logits.append(out.view(B, -1))
         
         return torch.cat(logits, dim=1)
+
+class PatchDiscriminator3D_sm(nn.Module):
+    def __init__(self, in_channels=1, num_scales=2):
+        super().__init__()
+        self.num_scales = num_scales
+
+        def make_scale(in_c):
+            return nn.Sequential(
+                nn.Conv3d(in_c,  32, 4, 2, 1, bias=True),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Conv3d( 32,  64, 4, 2, 1, bias=False),
+                nn.InstanceNorm3d(64, affine=True),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Conv3d( 64, 128, 4, 2, 1, bias=False),
+                nn.InstanceNorm3d(128, affine=True),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Conv3d(128,  64, 3, 1, 1, bias=False),
+                nn.InstanceNorm3d(64, affine=True),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Conv3d( 64,   1, 3, 1, 1),
+            )
+
+        self.scales = nn.ModuleList([make_scale(in_channels) for _ in range(num_scales)])
+        self.downsample = nn.AvgPool3d(kernel_size=3, stride=2, padding=1, count_include_pad=False)
+
+    def forward(self, x):
+        out = []
+        for i, model in enumerate(self.scales):
+            if i > 0:
+                x = self.downsample(x)
+            out.append(model(x).flatten(1))
+        return torch.cat(out, dim=1)
