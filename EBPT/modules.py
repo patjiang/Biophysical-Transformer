@@ -120,7 +120,7 @@ class VoxelizeTrunk(nn.Module):
         skip8_std = self.reduce_32_to_24(skip8)
         skip8_reduced = self.reduce_24_to_16(skip8_std)
         skip33 = self.up2(skip8_reduced)
-        x33 = x33 + skip33
+        x33 += skip33
         out = self.convout(x33)
         return out
 
