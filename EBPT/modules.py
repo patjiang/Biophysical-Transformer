@@ -329,9 +329,10 @@ class InteractionTokenBlock(nn.Module):
     def forward(self, z):
         B, L, C = z.shape
         t = self.tokens.expand(B, -1, -1)
-        t, _ = self.attn(t, z, z)
-        z, _ = self.attn(z, t, t)
-        return self.ff(z)
+        z_enriched, _ = self.attn(z, t, t) 
+        z = z + z_enriched
+        
+        return z + self.ff(z)
 
 
 class TransformerStackEnc(nn.Module):
