@@ -500,7 +500,7 @@ class SE3PLMLightning(pl.LightningModule):
             student_logits = self.student_dino_head(student_bos)
             student_probs = F.softmax(student_logits, dim=-1)
             prototype_entropy = -(student_probs * torch.log(student_probs + 1e-8)).sum(dim=-1).mean()
-        self.log('train_loss', total_g_loss, sync_dist=True, batch_size=tdat.shape[0])
+        self.log('train_loss', total_g_loss.detach(), sync_dist=True, batch_size=1)
         self.log('train_raw_mlm_loss', raw_mlm_loss.detach(), sync_dist=True, batch_size=1)
         self.log('train_dino_loss', dino_loss.detach(), sync_dist=True, batch_size=1)
         self.log('train_mae_loss', g_losses['mae_loss'].detach(), sync_dist=True, batch_size=1)
@@ -534,7 +534,7 @@ class SE3PLMLightning(pl.LightningModule):
         self.log('val_wa_loss', g_losses['wa_loss'].detach(), prog_bar=False, sync_dist=True)
         self.log('val_spatial_loss', g_losses['spatial_loss'].detach(), prog_bar=False, sync_dist=True)
         self.log('val_recon_loss', raw_recon_loss.detach(), prog_bar=False, sync_dist=True)
-        self.log('val_loss', weighted_recon_loss.detach(), prog_bar=True, sync_dist=True, batch_size=tdat.shape[0])
+        self.log('val_loss', weighted_recon_loss.detach(), prog_bar=True, sync_dist=True, batch_size=1)
 
         return weighted_recon_loss
      
