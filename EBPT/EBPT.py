@@ -261,7 +261,7 @@ class SE3PLMLightning(pl.LightningModule):
             dice = (2.0 * intersection + eps) / (union + eps)
             return 1.0 - dice.mean()
 
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast('cuda', enabled=False):
             rec_f = rec.float()
             tdat_f = tdat.unsqueeze(1).float() if tdat.dim() == 4 else tdat.float()
             
@@ -297,7 +297,7 @@ class SE3PLMLightning(pl.LightningModule):
         return weighted_loss, precision
 
     def compute_generator_losses(self, rec, tdat, tmsk=None):
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast('cuda', enabled=False):
             rec_masked = rec.float()
             tdat_masked = tdat.unsqueeze(1).float() if tdat.dim() == 4 else tdat.float()
             
@@ -329,7 +329,7 @@ class SE3PLMLightning(pl.LightningModule):
             }
             
     def compute_discriminator_losses(self, rec, tdat, tmsk=None, epsilon_drift = 0.001):
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast('cuda', enabled=False):
             rec_masked = rec.float()
             tdat_masked = tdat.unsqueeze(1).float() if tdat.dim() == 4 else tdat.float()
             noise_std = max(0.001, 0.1 - (self.step / 200000) * 0.1)
@@ -478,31 +478,23 @@ class SE3PLMLightning(pl.LightningModule):
         check_nan(total_g_loss, "total_g_loss")
 
         is_accumulating = (batch_idx + 1) % N_ACC != 0
-
         if is_accumulating:
             with self.trainer.model.no_sync():
                 self.manual_backward(total_g_loss / N_ACC)
         else:
             self.manual_backward(total_g_loss / N_ACC)
+        
+        if not is_accumulating:
+            self.clip_gradients(opt_g, gradient_clip_val=20.0, gradient_clip_algorithm="norm")
             opt_g.step()
             opt_g.zero_grad()
-            
-        if (batch_idx + 1) % N_ACC == 0:
-            mlm_params = list(self.mlm_head.parameters()) + list(self.student_encoder.parameters())
-            b_parm = list(self.b.parameters())
-            i_parm = list(self.i.parameters())
-            torch.nn.utils.clip_grad_norm_([self.loss_log_vars], max_norm=20.0)
-            torch.nn.utils.clip_grad_norm_(mlm_params, max_norm=20.0)
-            torch.nn.utils.clip_grad_norm_(b_parm, max_norm=4.0)
-            torch.nn.utils.clip_grad_norm_(i_parm, max_norm=12.0)
-
-            opt_g.step()
             self.update_teacher_ema()
             self.loss_log_vars.data.clamp_(-2.0, 4.0)
+            
             sched = self.lr_schedulers()
             if sched is not None:
                 sched.step()
-
+                
         with torch.no_grad():
             student_bos = F.normalize(z[:, 0, :], dim=-1, p=2)
             student_logits = self.student_dino_head(student_bos)
