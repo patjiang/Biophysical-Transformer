@@ -2,6 +2,7 @@ import os
 local_rank = int(os.environ.get("LOCAL_RANK", 0))
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5"
 import torch
+torch.cuda.set_device(local_rank)
 import torch.distributed as dist
 from torch.utils.data import DataLoader, Sampler
 from collections import defaultdict
