@@ -413,7 +413,7 @@ class SE3PLMLightning(pl.LightningModule):
         if batch_idx % (N_ACC // 2) == 0:
             opt_d.zero_grad()
 
-        tdat, masked_seqs, labels, _, full_seqs, _ = batch
+        tdat, masked_seqs, labels, _, full_seqs, _ = batch[0]
         labels = labels.view(-1)
         labels = torch.cat((torch.tensor([-100], dtype=torch.int64, device=labels.device), labels))
 
@@ -517,7 +517,7 @@ class SE3PLMLightning(pl.LightningModule):
         if batch is None:
             return None
 
-        tdat, seqs, _ = batch[:3]
+        tdat, seqs, _ = batch[0]
         seqs = self.preprocess_sequence(seqs)
         z, rec = self.forward(seqs)
 
