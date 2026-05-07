@@ -369,7 +369,8 @@ class TransformerStackEnc(nn.Module):
                 d_model=output_dim, 
                 nhead=nhead, 
                 dim_feedforward=output_dim * 2, 
-                dropout=dropout
+                dropout=dropout,
+                use_tucker=True,
             ) for _ in range(e2l)
         ])
 
