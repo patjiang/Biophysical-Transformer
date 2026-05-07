@@ -26,12 +26,27 @@ class DistributedBucketSampler(Sampler):
         
     def _form_macrobatches(self):
         macrobatches = []
+        global_remainders = []
+
         for bucket_id, indices in self.length_to_indices.items():
             indices.sort(key=lambda idx: self.dataset_lengths[idx])
-            for i in range(0, len(indices), self.num_replicas):
-                chunk = indices[i : i + self.num_replicas]
-                if len(chunk) == self.num_replicas:
-                    macrobatches.append(chunk)
+            
+            num_full = (len(indices) // self.num_replicas) * self.num_replicas
+            full_indices = indices[:num_full]
+            remainders = indices[num_full:]
+            
+            for i in range(0, len(full_indices), self.num_replicas):
+                macrobatches.append(full_indices[i : i + self.num_replicas])
+            
+            global_remainders.extend(remainders)
+        
+        global_remainders.sort(key=lambda idx: self.dataset_lengths[idx])
+        
+        for i in range(0, len(global_remainders), self.num_replicas):
+            chunk = global_remainders[i : i + self.num_replicas]
+            if len(chunk) == self.num_replicas:
+                macrobatches.append(chunk)
+                
         return macrobatches
 
     def set_epoch(self, epoch):
