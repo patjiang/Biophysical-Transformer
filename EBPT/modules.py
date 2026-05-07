@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -162,15 +163,71 @@ class RotaryPositionalEmbedding(nn.Module):
             self.cache = torch.stack([emb.cos(), emb.sin()], dim=-1)
         return self.cache[:seq_len].to(dtype=x.dtype)
 
-def apply_rotary_pos_emb(x, sincos):
-    cos = sincos[..., 0].unsqueeze(0).unsqueeze(2)
-    sin = sincos[..., 1].unsqueeze(0).unsqueeze(2)
+def apply_rotary_pos_emb_latent(x, sincos):
+    cos = sincos[..., 0]
+    sin = sincos[..., 1]
+    
+    if x.dim() == 4:
+        cos = cos.unsqueeze(0).unsqueeze(0)
+        sin = sin.unsqueeze(0).unsqueeze(0)
+    elif x.dim() == 3:
+        cos = cos.unsqueeze(0)
+        sin = sin.unsqueeze(0)
+        
     x1 = x[..., 0::2]
     x2 = x[..., 1::2]
     x_rotated = torch.stack([-x2, x1], dim=-1).flatten(-2)
     x_original = torch.stack([x1, x2], dim=-1).flatten(-2)
     return (x_original * cos) + (x_rotated * sin)
 
+class TuckerAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads, tucker_ranks=(8, 128, 64), dropout=0.1, shared_kv=True):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.shared_kv = shared_kv
+        r1, r2, r3 = tucker_ranks
+        self.U1 = nn.Parameter(torch.Tensor(num_heads, r1))
+        self.U2 = nn.Parameter(torch.Tensor(embed_dim, r2))
+        self.U3 = nn.Parameter(torch.Tensor(embed_dim, r3))
+        self.C = nn.Parameter(torch.Tensor(r1, r2, r3))
+        self.U1_tilde = nn.Parameter(torch.Tensor(num_heads, r1))
+        self.U2_tilde = nn.Parameter(torch.Tensor(embed_dim, r2))
+        if not shared_kv:
+            self.U3_tilde = nn.Parameter(torch.Tensor(embed_dim, r3))
+        self.C_tilde = nn.Parameter(torch.Tensor(r1, r2, r3))
+        self.resid_dropout = nn.Dropout(dropout)
+        self.dropout_p = dropout
+        self.rope = RotaryPositionalEmbedding(r3)
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        for p in [self.U1, self.U2, self.U3, self.C, self.U1_tilde, self.U2_tilde, self.C_tilde]:
+            nn.init.normal_(p, std=0.02)
+        if not self.shared_kv:
+            nn.init.normal_(self.U3_tilde, std=0.02)
+
+    def forward(self, x, mask=None):
+        B, L, D = x.shape
+        X_U2 = x @ self.U2
+        K = x @ self.U3
+        Q = torch.einsum('ijk, hi, blj -> bhlk', self.C, self.U1, X_U2)
+        sincos = self.rope(K)
+        Q = apply_rotary_pos_emb_latent(Q, sincos)
+        K = apply_rotary_pos_emb_latent(K, sincos)
+        scores = torch.einsum('bhlk, bmk -> bhlm', Q, K) / math.sqrt(self.head_dim)
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, float('-inf'))
+            
+        attn = F.softmax(scores, dim=-1)
+        if self.training and self.dropout_p > 0.0:
+            attn = F.dropout(attn, p=self.dropout_p)
+        V = K if self.shared_kv else (x @ self.U3_tilde)
+        Y = torch.einsum('bhlm, bmk -> bhlk', attn, V)
+        out = torch.einsum('bhlk, hi, ijk, dj -> bld', Y, self.U1_tilde, self.C_tilde, self.U2_tilde)
+        return self.resid_dropout(out)
+        
 class RoPEMultiheadAttention(nn.Module):
     def __init__(self, embed_dim, num_heads, dropout=0.1):
         super().__init__()
@@ -211,9 +268,12 @@ class RoPEMultiheadAttention(nn.Module):
         return self.resid_dropout(self.out_proj(out))
 
 class RoPETransformerLayer(nn.Module):
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, use_tucker=False, tucker_ranks=(8, 128, 64)):
         super().__init__()
-        self.self_attn = RoPEMultiheadAttention(d_model, nhead, dropout=dropout)
+        if use_tucker:
+            self.self_attn = TuckerAttention(d_model, nhead, tucker_ranks=tucker_ranks, dropout=dropout)
+        else:
+            self.self_attn = RoPEMultiheadAttention(d_model, nhead, dropout=dropout)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.feed_forward = nn.Sequential(
@@ -224,9 +284,9 @@ class RoPETransformerLayer(nn.Module):
             nn.Dropout(dropout)
         )
 
-    def forward(self, x):
+    def forward(self, x, mask=None):
         x_norm = self.norm1(x)
-        attn_out = self.self_attn(x_norm)
+        attn_out = self.self_attn(x_norm, mask=mask)
         x = x + attn_out
         x_norm = self.norm2(x)
         ff_out = self.feed_forward(x_norm)
