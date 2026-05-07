@@ -162,18 +162,25 @@ class RotaryPositionalEmbedding(nn.Module):
             emb = torch.cat((freqs, freqs), dim=-1)
             self.cache = torch.stack([emb.cos(), emb.sin()], dim=-1)
         return self.cache[:seq_len].to(dtype=x.dtype)
+        
+def apply_rotary_pos_emb(x, sincos):
+    cos = sincos[..., 0].unsqueeze(0).unsqueeze(2)
+    sin = sincos[..., 1].unsqueeze(0).unsqueeze(2)
+    x1 = x[..., 0::2]
+    x2 = x[..., 1::2]
+    x_rotated = torch.stack([-x2, x1], dim=-1).flatten(-2)
+    x_original = torch.stack([x1, x2], dim=-1).flatten(-2)
+    return (x_original * cos) + (x_rotated * sin)
 
 def apply_rotary_pos_emb_latent(x, sincos):
     cos = sincos[..., 0]
     sin = sincos[..., 1]
-    
     if x.dim() == 4:
         cos = cos.unsqueeze(0).unsqueeze(0)
         sin = sin.unsqueeze(0).unsqueeze(0)
     elif x.dim() == 3:
         cos = cos.unsqueeze(0)
         sin = sin.unsqueeze(0)
-        
     x1 = x[..., 0::2]
     x2 = x[..., 1::2]
     x_rotated = torch.stack([-x2, x1], dim=-1).flatten(-2)
