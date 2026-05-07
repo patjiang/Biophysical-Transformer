@@ -98,11 +98,11 @@ class SE3PLMLightning(pl.LightningModule):
                  cyclic_lr: bool = True,
                  max_lr_factor: float = 100.0,
                  step_size_up: int = 1000,
-                 lambda_wa: float = 5000.0,
-                 lambda_adv: float = 0.1,
+                 lambda_wa: float = 5.0,
+                 lambda_adv: float = 2.0,
                  lambda_dino: float = 0.1,
                  num_prototypes: int = 128,
-                 teacher_momentum: float = 0.99,
+                 teacher_momentum: float = 0.999,
                  dino_warmup_steps: int = 60000,
                  vocab_size: int = 8003,
                  queue_length=128,
@@ -145,17 +145,36 @@ class SE3PLMLightning(pl.LightningModule):
         self.i = InteractionTokenBlock()
         self.b = VoxelizeTrunk()
         self.step = 0#50001
-        self.discriminator = PatchDiscriminator3D_sm(in_channels=1)
+        self.discriminator = PatchDiscriminator3D(in_channels=1)
         #self.register_buffer("prototype_center", torch.zeros(self.num_prototypes))
         self.register_buffer("queue", torch.zeros(queue_length, num_prototypes))
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
         self.queue_length = queue_length
         
-        self.center_momentum = 0.99
+        self.center_momentum = 0.999
         self.student_temp = 0.15
         self.teacher_temp = 0.07
-        self.loss_log_vars = nn.Parameter(torch.tensor([2.2, 1.6, 3.2]))
+        self.loss_log_vars = nn.Parameter(torch.tensor([2.2, 0, 0]))
         
+    def on_train_start(self):
+        if not hasattr(self, '_biases_initialized'):
+            self._biases_initialized = False
+        if self._biases_initialized:
+            print("\n" + "="*60)
+            print("INITIALIZING BIASES FROM TRAINING DATA")
+            print("="*60 + "\n")
+            train_loader = self.trainer.train_dataloader
+            compute_and_initialize_biases(
+                train_loader=train_loader,
+                mlm_head=self.mlm_head,
+                convout_module = self.b.convout,
+                vocab_size=8003,
+                device=self.device
+            )
+            print("\n" + "="*60)
+            print("BIAS INITIALIZATION COMPLETE")
+            print("="*60 + "\n")
+            self._biases_initialized = True
             
     def forward(self, seq, pred=False):
         z = self.student_encoder(seq)
@@ -313,7 +332,7 @@ class SE3PLMLightning(pl.LightningModule):
         with torch.cuda.amp.autocast(enabled=False):
             rec_masked = rec.float()
             tdat_masked = tdat.unsqueeze(1).float() if tdat.dim() == 4 else tdat.float()
-            noise_std = max(0.001, 0.1 - (self.step / 500000) * 0.1)
+            noise_std = max(0.001, 0.1 - (self.step / 200000) * 0.1)
             if tmsk is not None:
                 mask = tmsk.unsqueeze(1)
                 rec_masked = rec_masked * mask
@@ -382,141 +401,123 @@ class SE3PLMLightning(pl.LightningModule):
         return base_weight + (0.999 * scale)
 
     def training_step(self, batch, batch_idx):
-        try:
-            if batch is None:
-                return None
-            batch = batch[0]
-            for b in batch:
-                b.to('cuda')
-            N_ACC = 16
-            opts = self.optimizers()
-            opt_g = opts[0]
-            opt_d = opts[1]
-            if batch_idx % N_ACC == 0:
-                opt_g.zero_grad()
-            if batch_idx % (N_ACC // 2) == 0:
-                opt_d.zero_grad()
-    
-            tdat, masked_seqs, labels, _, full_seqs= batch
-            labels = labels.view(-1)
-            labels = torch.cat((torch.tensor([-100], dtype=torch.int64, device=labels.device), labels))
-    
-            masked_seqs = self.preprocess_sequence(masked_seqs)
-            full_seqs = self.preprocess_sequence(full_seqs)
-            z, rec = self.forward(masked_seqs)
-            
-            if(self.step > 50000):
-                d_losses = self.compute_discriminator_losses(rec, tdat, None)
-                #if torch.isnan(val).any() or torch.isinf(val).any():
-                #        print(f"\nFATAL: Discriminator '{key}' became NaN/Inf!")
-                #        print(f"Step: {self.step}, Batch Index: {batch_idx}")
-                #        torch.save(d_losses, 'nan_dump_losses.pt')
-                #        raise RuntimeError(f"Training halted due to NaN in {key}")
-                self.manual_backward(d_losses['d_loss'] / (N_ACC // 2))
-    
-                if (batch_idx + 1) % (N_ACC // 2) == 0:
-                    self.clip_gradients(opt_d, gradient_clip_val=2.0, gradient_clip_algorithm="norm")
-                    opt_d.step()
-                self.log('train_full_d_loss', d_losses['d_loss'].detach(), sync_dist=True)
-                self.log('train_real_d_loss', d_losses['d_loss_real'].detach(), sync_dist=True)
-                self.log('train_fake_d_loss', d_losses['d_loss_fake'].detach(), sync_dist=True)
-                self.log('r1_penalty', d_losses['r1_penalty'].detach(), sync_dist=True)
-            else:
-                self.log('train_full_d_loss', 0.0, sync_dist=True, batch_size=1)
-                self.log('train_real_d_loss', 0.0, sync_dist=True, batch_size=1)
-                self.log('train_fake_d_loss', 0.0, sync_dist=True, batch_size=1)
-                self.log('r1_penalty', 0.0, sync_dist=True)
-                    
-            mlm_logits = self.mlm_head(z)
-            if (labels[1:] != -100).any():
-                raw_mlm_loss = F.cross_entropy(mlm_logits.view(-1, 8003).float(), labels, reduction='mean')
-            else:
-                raw_mlm_loss = 0 * torch.mean(mlm_logits)
-    
-            dino_loss = self.compute_dino_loss(z, full_seqs)
-    
-            g_losses = self.compute_generator_losses(rec, tdat, None)
-            if(self.step > 50000):
-                self.log('train_adv_loss', g_losses['adv_loss'].detach(), sync_dist=True, batch_size=1)
-            else:
-                self.log('train_adv_loss', g_losses['adv_loss'], sync_dist=True, batch_size=1)
-            raw_recon_loss = g_losses['recon_loss']
-            
-            str_loss = self.compute_structure_loss(rec, tdat, None)
-            structure_loss = str_loss['str_loss']
-            
-            final_mlm, prec0 = self.compute_adaptive_loss(raw_mlm_loss, 0)
-            final_dino, prec1 = self.compute_adaptive_loss(dino_loss, 1)
-            final_recon, prec2 = self.compute_adaptive_loss(raw_recon_loss, 2)
-            
-    
-            total_g_loss = (5 * final_mlm) + final_dino + final_recon + structure_loss + g_losses['adv_loss']
-    
-            check_nan(z, "encoder output z")
-            check_nan(rec, "reconstruction rec")
-            check_nan(raw_mlm_loss, "mlm_loss")
-            check_nan(dino_loss, "dino_loss")
-            check_nan(g_losses['mae_loss'], "mae_loss")
-            check_nan(g_losses['wa_loss'], "wa_loss")
-            check_nan(structure_loss, "structure_loss")
-            check_nan(total_g_loss, "total_g_loss")
-    
-            self.manual_backward(total_g_loss / N_ACC)
-            if (batch_idx + 1) % N_ACC == 0:
-                mlm_params = list(self.mlm_head.parameters()) + list(self.student_encoder.parameters())
-                b_parm = list(self.b.parameters())
-                i_parm = list(self.i.parameters())
-                torch.nn.utils.clip_grad_norm_([self.loss_log_vars], max_norm=20.0)
-                torch.nn.utils.clip_grad_norm_(mlm_params, max_norm=20.0)
-                torch.nn.utils.clip_grad_norm_(b_parm, max_norm=4.0)
-                torch.nn.utils.clip_grad_norm_(i_parm, max_norm=12.0)
-    
-                opt_g.step()
-                self.update_teacher_ema()
-                self.loss_log_vars.data.clamp_(-2.0, 4.0)
-                sched = self.lr_schedulers()
-                if sched is not None:
-                    sched.step()
-    
-            with torch.no_grad():
-                student_bos = F.normalize(z[:, 0, :], dim=-1, p=2)
-                student_logits = self.student_dino_head(student_bos)
-                student_probs = F.softmax(student_logits, dim=-1)
-                prototype_entropy = -(student_probs * torch.log(student_probs + 1e-8)).sum(dim=-1).mean()
-    
-            self.log('train_loss', total_g_loss.detach(), sync_dist=True, batch_size=1)
-            self.log('train_raw_mlm_loss', raw_mlm_loss.detach(), sync_dist=True, batch_size=1)
-            self.log('train_dino_loss', dino_loss.detach(), sync_dist=True, batch_size=1)
-            self.log('train_mae_loss', g_losses['mae_loss'].detach(), sync_dist=True, batch_size=1)
-            self.log('train_wa_loss', g_losses['wa_loss'].detach(), sync_dist=True, batch_size=1)
-            self.log('train_spatial_loss', g_losses['spatial_loss'].detach(), sync_dist=True, batch_size=1)
-            self.log('prototype_entropy', prototype_entropy, sync_dist=True, batch_size=1)
-            self.log('prec_mlm', prec0.detach(), sync_dist=True, batch_size=1)
-            self.log('prec_dino', prec1.detach(), sync_dist=True, batch_size=1)
-            self.log('prec_recon', prec2.detach(), sync_dist=True, batch_size=1)
-            self.log('structure_loss', str_loss['raw_str_loss'].detach(), sync_dist=True, batch_size=1)
-            self.log('p_dice', str_loss['pos_dice'].detach(), sync_dist=True, batch_size=1)
-            self.log('b_dice', str_loss['neg_dice'].detach(), sync_dist=True, batch_size=1)
-            self.step += 1
-    
-        except torch.OutOfMemoryError as e:
-            print(f"\n--- CUDA OOM Caught at Batch Index {batch_idx} ---")
-            if isinstance(batch, torch.Tensor):
-                print(f"Input Shape: {batch.shape}")
-            elif isinstance(batch, (list, tuple)):
-                print(f"Input Shapes: {[getattr(x, 'shape', 'Not a tensor') for x in batch]}")            
-            torch.cuda.empty_cache()
-            
+        if batch is None:
             return None
+
+        N_ACC = 16
+        opts = self.optimizers()
+        opt_g = opts[0]
+        opt_d = opts[1]
+        if batch_idx % N_ACC == 0:
+            opt_g.zero_grad()
+        if batch_idx % (N_ACC // 2) == 0:
+            opt_d.zero_grad()
+
+        tdat, masked_seqs, labels, _, full_seqs, _ = batch
+        labels = labels.view(-1)
+        labels = torch.cat((torch.tensor([-100], dtype=torch.int64, device=labels.device), labels))
+
+        masked_seqs = self.preprocess_sequence(masked_seqs)
+        full_seqs = self.preprocess_sequence(full_seqs)
+        z, rec = self.forward(masked_seqs)
+        
+        if(self.step > 30000):
+            d_losses = self.compute_discriminator_losses(rec, tdat, None)
+            #if torch.isnan(val).any() or torch.isinf(val).any():
+            #        print(f"\nFATAL: Discriminator '{key}' became NaN/Inf!")
+            #        print(f"Step: {self.step}, Batch Index: {batch_idx}")
+            #        torch.save(d_losses, 'nan_dump_losses.pt')
+            #        raise RuntimeError(f"Training halted due to NaN in {key}")
+            self.manual_backward(d_losses['d_loss'] / (N_ACC // 2))
+
+            if (batch_idx + 1) % (N_ACC // 2) == 0:
+                self.clip_gradients(opt_d, gradient_clip_val=2.0, gradient_clip_algorithm="norm")
+                opt_d.step()
+            self.log('train_full_d_loss', d_losses['d_loss'].detach(), sync_dist=True)
+            self.log('train_real_d_loss', d_losses['d_loss_real'].detach(), sync_dist=True)
+            self.log('train_fake_d_loss', d_losses['d_loss_fake'].detach(), sync_dist=True)
+            self.log('r1_penalty', d_losses['r1_penalty'].detach(), sync_dist=True)
+        else:
+            self.log('train_full_d_loss', 0.0, sync_dist=True, batch_size=1)
+            self.log('train_real_d_loss', 0.0, sync_dist=True, batch_size=1)
+            self.log('train_fake_d_loss', 0.0, sync_dist=True, batch_size=1)
+            self.log('r1_penalty', 0.0, sync_dist=True)
+                
+        mlm_logits = self.mlm_head(z)
+        if (labels[1:] != -100).any():
+            raw_mlm_loss = F.cross_entropy(mlm_logits.view(-1, 8003).float(), labels, reduction='mean')
+        else:
+            raw_mlm_loss = 0 * torch.mean(mlm_logits)
+
+        dino_loss = self.compute_dino_loss(z, full_seqs)
+
+        g_losses = self.compute_generator_losses(rec, tdat, None)
+        if(self.step > 50000):
+            self.log('train_adv_loss', g_losses['adv_loss'].detach(), sync_dist=True, batch_size=1)
+        else:
+            self.log('train_adv_loss', g_losses['adv_loss'], sync_dist=True, batch_size=1)
+        raw_recon_loss = g_losses['recon_loss']
+        
+        str_loss = self.compute_structure_loss(rec, tdat, None)
+        structure_loss = str_loss['str_loss']
+        
+        final_mlm, prec0 = self.compute_adaptive_loss(raw_mlm_loss, 0)
+        final_dino, prec1 = dino_loss, 1.0
+        final_recon, prec2 = raw_recon_loss, 1.0
+        
+
+        total_g_loss = (5 * final_mlm) + final_dino + final_recon + structure_loss + g_losses['adv_loss']
+
+        check_nan(z, "encoder output z")
+        check_nan(rec, "reconstruction rec")
+        check_nan(raw_mlm_loss, "mlm_loss")
+        check_nan(dino_loss, "dino_loss")
+        check_nan(g_losses['mae_loss'], "mae_loss")
+        check_nan(g_losses['wa_loss'], "wa_loss")
+        check_nan(structure_loss, "structure_loss")
+        check_nan(total_g_loss, "total_g_loss")
+
+        self.manual_backward(total_g_loss / N_ACC)
+        if (batch_idx + 1) % N_ACC == 0:
+            mlm_params = list(self.mlm_head.parameters()) + list(self.student_encoder.parameters())
+            b_parm = list(self.b.parameters())
+            i_parm = list(self.i.parameters())
+            torch.nn.utils.clip_grad_norm_([self.loss_log_vars], max_norm=20.0)
+            torch.nn.utils.clip_grad_norm_(mlm_params, max_norm=20.0)
+            torch.nn.utils.clip_grad_norm_(b_parm, max_norm=4.0)
+            torch.nn.utils.clip_grad_norm_(i_parm, max_norm=12.0)
+
+            opt_g.step()
+            self.update_teacher_ema()
+            self.loss_log_vars.data.clamp_(-2.0, 4.0)
+            sched = self.lr_schedulers()
+            if sched is not None:
+                sched.step()
+
+        with torch.no_grad():
+            student_bos = F.normalize(z[:, 0, :], dim=-1, p=2)
+            student_logits = self.student_dino_head(student_bos)
+            student_probs = F.softmax(student_logits, dim=-1)
+            prototype_entropy = -(student_probs * torch.log(student_probs + 1e-8)).sum(dim=-1).mean()
+
+        self.log('train_loss', total_g_loss.detach(), sync_dist=True, batch_size=1)
+        self.log('train_raw_mlm_loss', raw_mlm_loss.detach(), sync_dist=True, batch_size=1)
+        self.log('train_dino_loss', dino_loss.detach(), sync_dist=True, batch_size=1)
+        self.log('train_mae_loss', g_losses['mae_loss'].detach(), sync_dist=True, batch_size=1)
+        self.log('train_wa_loss', g_losses['wa_loss'].detach(), sync_dist=True, batch_size=1)
+        self.log('train_spatial_loss', g_losses['spatial_loss'].detach(), sync_dist=True, batch_size=1)
+        self.log('prototype_entropy', prototype_entropy, sync_dist=True, batch_size=1)
+        self.log('prec_mlm', prec0.detach(), sync_dist=True, batch_size=1)
+        self.log('structure_loss', str_loss['raw_str_loss'].detach(), sync_dist=True, batch_size=1)
+        self.log('p_dice', str_loss['pos_dice'].detach(), sync_dist=True, batch_size=1)
+        self.log('b_dice', str_loss['neg_dice'].detach(), sync_dist=True, batch_size=1)
+        self.step += 1
 
 
     def validation_step(self, batch, batch_idx):
         if batch is None:
             return None
-        batch = batch[0]
-        for b in batch:
-            b.to('cuda')
-            
+
         tdat, seqs, _ = batch
         seqs = self.preprocess_sequence(seqs)
         z, rec = self.forward(seqs)
