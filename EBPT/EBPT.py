@@ -477,7 +477,16 @@ class SE3PLMLightning(pl.LightningModule):
         check_nan(structure_loss, "structure_loss")
         check_nan(total_g_loss, "total_g_loss")
 
-        self.manual_backward(total_g_loss / N_ACC)
+        is_accumulating = (batch_idx + 1) % N_ACC != 0
+
+        if is_accumulating:
+            with self.trainer.model.no_sync():
+                self.manual_backward(total_g_loss / N_ACC)
+        else:
+            self.manual_backward(total_g_loss / N_ACC)
+            opt_g.step()
+            opt_g.zero_grad()
+            
         if (batch_idx + 1) % N_ACC == 0:
             mlm_params = list(self.mlm_head.parameters()) + list(self.student_encoder.parameters())
             b_parm = list(self.b.parameters())
