@@ -413,7 +413,7 @@ class SE3PLMLightning(pl.LightningModule):
         if batch_idx % (N_ACC // 2) == 0:
             opt_d.zero_grad()
 
-        tdat, masked_seqs, labels, _, full_seqs, _ = batch[0]
+        tdat, masked_seqs, labels, _, full_seqs = batch[0]
         labels = labels.view(-1)
         labels = torch.cat((torch.tensor([-100], dtype=torch.int64, device=labels.device), labels))
 
