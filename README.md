@@ -11,7 +11,7 @@ chmod +x setup.sh
 
 for me:
 ```
-git clone https://patjiang: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@github.com/patjiang/BiophysicalTransformer.git
+git clone https://patjiang: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@github.com/patjiang/BiophysicalTransformer.git
 ```
 
 ```
