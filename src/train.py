@@ -79,8 +79,8 @@ pl.seed_everything(a.seed, workers=True)
 # autocast(enabled=False), must match across arms.
 torch.set_float32_matmul_precision('high')
 
-from data import *                      # noqa: E402  (after seeding)
-from lightning_model import *           # noqa: E402
+from data import *
+from model import *
 
 print("=" * 70)
 print(f"  ABLATION ARM {'B (no voxel)' if a.no_voxel else 'A (voxel)'}"
@@ -88,8 +88,6 @@ print(f"  ABLATION ARM {'B (no voxel)' if a.no_voxel else 'A (voxel)'}"
 print("=" * 70)
 
 # ------------------------------------------------------------------- data
-# Arm B still loads voxel targets and discards them.  Wasteful (~43 MB per
-# 300-residue protein) but keeps the pipeline byte-identical across arms.
 
 train_dataset = PreprocessedBiophysicalDataset('../kstruct_pt_preprocessed/train')
 vali_dataset = PreprocessedBiophysicalDataset('../kstruct_pt_preprocessed/val')
