@@ -233,17 +233,7 @@ def embed_labelled(model, entries, device, max_tokens=1024, stride=512,
 
         if emb is None:
             print(f"  {acc}: too short (L={len(seq)}), skipping")
-            skipped += 1def load_model(ckpt_path, device, dtype=torch.bfloat16):
-    """Load a BioT checkpoint (.ckpt or .safetensors)."""
-    if ckpt_path.endswith(".safetensors"):
-        from safetensors.torch import load_file
-        model = BioTLightning()
-        model.load_state_dict(load_file(ckpt_path), strict=False)
-    else:
-        model = BioTLightning.load_from_checkpoint(ckpt_path, map_location="cpu")
-    model = model.to(dtype=dtype, device=device)
-    model.eval()
-    return model
+            skipped += 1
             continue
 
         L = min(len(clean), len(labels), emb.shape[0])
