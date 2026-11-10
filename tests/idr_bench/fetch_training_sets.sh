@@ -5,81 +5,79 @@ set -e
 
 mkdir -p training_sets
 
-# ── ESM2: trained on UniRef50 (2022_01) ──
-# ~47M sequences, ~7GB compressed.  This is the full training corpus.
-ESM_URL="https://ftp.uniprot.org/pub/databases/uniprot/previous_releases/release-2022_01/uniref/uniref2022_01/uniref50.fasta.gz"
-ESM_OUT="training_sets/uniref50_2022_01.fasta"
+# ── ESM2: trained on UniRef50 ──
+# Current release (~47M sequences, ~7GB compressed).
+# ESM2 used the 2022_01 snapshot but the current release is
+# a superset and works for overlap checking.
+ESM_OUT="training_sets/uniref50.fasta"
 if [ -f "${ESM_OUT}" ]; then
     echo "ESM2 training set already downloaded"
 else
-    echo "Downloading ESM2 training set (UniRef50 2022_01, ~7GB)..."
-    echo "  ${ESM_URL}"
-    wget -q --show-progress -O "${ESM_OUT}.gz" "${ESM_URL}" \
-        || curl -L -o "${ESM_OUT}.gz" "${ESM_URL}"
-    echo "Decompressing..."
-    gunzip "${ESM_OUT}.gz"
+    echo "Downloading ESM2 training set (UniRef50, ~7GB compressed)..."
+    curl -L --progress-bar -o "${ESM_OUT}.gz" \
+        "https://ftp.uniprot.org/pub/databases/uniprot/uniref/uniref50/uniref50.fasta.gz"
+    # Verify it's actually gzip
+    if file "${ESM_OUT}.gz" | grep -q gzip; then
+        echo "Decompressing..."
+        gunzip "${ESM_OUT}.gz"
+    else
+        echo "ERROR: download is not gzip — check the URL or try manually:"
+        echo "  https://ftp.uniprot.org/pub/databases/uniprot/uniref/uniref50/uniref50.fasta.gz"
+        rm -f "${ESM_OUT}.gz"
+        exit 1
+    fi
     echo "  -> ${ESM_OUT} ($(grep -c '^>' "${ESM_OUT}") sequences)"
 fi
 
-# ── AlphaFold2: trained on PDB + UniRef30 + BFD ──
-# PDB sequences are the identifiable part; UniRef30/BFD are huge.
-# We fetch PDB sequences from RCSB (~200k chains).
+# ── AlphaFold2 / AIUPred: trained on PDB structures ──
+# PDB sequences from RCSB (~200k protein chains).
 AF_OUT="training_sets/pdb_seqres.fasta"
 if [ -f "${AF_OUT}" ]; then
     echo "AlphaFold PDB sequences already downloaded"
 else
-    echo "Downloading PDB sequences (RCSB pdb_seqres.txt, ~90MB)..."
-    wget -q --show-progress -O "${AF_OUT}.gz" \
-        "https://ftp.wwpdb.org/pub/pdb/derived_data/pdb_seqres.txt.gz" \
-        || curl -L -o "${AF_OUT}.gz" \
+    echo "Downloading PDB sequences (~90MB)..."
+    curl -L --progress-bar -o "${AF_OUT}.gz" \
         "https://ftp.wwpdb.org/pub/pdb/derived_data/pdb_seqres.txt.gz"
-    gunzip "${AF_OUT}.gz"
-    # Filter to protein chains only (remove DNA/RNA)
+    if file "${AF_OUT}.gz" | grep -q gzip; then
+        gunzip "${AF_OUT}.gz"
+    else
+        echo "ERROR: download is not gzip"
+        rm -f "${AF_OUT}.gz"
+        exit 1
+    fi
+    # Keep protein chains only
     python3 -c "
 import sys
-keep, buf = False, []
+keep, header, buf = False, '', []
 with open('${AF_OUT}') as f:
     for line in f:
         if line.startswith('>'):
             if keep and buf:
-                sys.stdout.write(header)
-                sys.stdout.write(''.join(buf))
-            header = line
-            keep = 'mol:protein' in line.lower() or 'mol:na' not in line.lower()
-            buf = []
+                sys.stdout.write(header + ''.join(buf))
+            header, buf = line, []
+            keep = 'mol:protein' in line.lower()
         else:
             buf.append(line)
     if keep and buf:
-        sys.stdout.write(header)
-        sys.stdout.write(''.join(buf))
+        sys.stdout.write(header + ''.join(buf))
 " > "${AF_OUT}.tmp" && mv "${AF_OUT}.tmp" "${AF_OUT}"
     echo "  -> ${AF_OUT} ($(grep -c '^>' "${AF_OUT}") protein chains)"
 fi
 
-# ── IUPred / AIUPred: trained on PDB missing electron density ──
-# Same PDB source as AlphaFold; the relevant overlap is PDB structures.
-echo "AIUPred uses PDB structures -> same file as AlphaFold: ${AF_OUT}"
-
 echo ""
 echo "============================================================"
-echo "Training sets in training_sets/:"
-ls -lh training_sets/*.fasta
+echo "Training sets:"
+ls -lh training_sets/*.fasta 2>/dev/null || echo "  (none)"
 echo ""
-echo "Run overlap checks with fasta_overlap.py:"
+echo "Run overlap with fasta_overlap.py:"
 echo ""
-echo "  # BioT overlap (use your corpus)"
+echo "  # ESM2"
 echo "  python ../../tests/fasta_overlap.py \\"
 echo "      --fasta CAID/demo-data/references/disorder_pdb.fasta \\"
-echo "      --corpus /path/to/biot/corpus.fasta \\"
-echo "      --out overlap_biot.csv"
-echo ""
-echo "  # ESM2 overlap"
-echo "  python ../../tests/fasta_overlap.py \\"
-echo "      --fasta CAID/demo-data/references/disorder_pdb.fasta \\"
-echo "      --corpus training_sets/uniref50_2022_01.fasta \\"
+echo "      --corpus training_sets/uniref50.fasta \\"
 echo "      --out overlap_esm2.csv"
 echo ""
-echo "  # AlphaFold / AIUPred overlap"
+echo "  # AlphaFold / AIUPred"
 echo "  python ../../tests/fasta_overlap.py \\"
 echo "      --fasta CAID/demo-data/references/disorder_pdb.fasta \\"
 echo "      --corpus training_sets/pdb_seqres.fasta \\"
