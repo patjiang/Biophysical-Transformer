@@ -3,7 +3,7 @@ set -e
 
 echo "Setting up BioT environment"
 
-ENV_NAME="EBPT"
+ENV_NAME="BioT"
 PYTHON_VERSION="3.10"
 
 if conda env list | grep -q "^${ENV_NAME} "; then
