@@ -53,7 +53,7 @@ pip install \
     pot==0.9.5 \
     einops==0.8.1 \
     matplotlib==3.10.3
-
+pip install safetensors==0.8.0
 echo "Verifying SE3CNN installation"
 python - << 'EOF'
 import torch
