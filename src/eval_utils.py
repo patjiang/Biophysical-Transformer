@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Evaluation harness for the SE3PLM k-mer protein language model.
+"""Evaluation harness for the BioT k-mer protein language model.
 
 Three subcommands::
 
@@ -41,7 +41,7 @@ from data import *
 
 torch.set_num_threads(1)
 
-CKPT_PATH = "checkpoints/se3plm_voxel_s0.safetensors"
+CKPT_PATH = "checkpoints/BioT_voxel_s0.safetensors"
 
 VOCAB_SIZE = 8003
 BOS_ID = 8002
@@ -134,8 +134,8 @@ def pad_positions(spans, device):
 # ---------------------------------------------------------------------- model
 
 def load_model(ckpt_path, device, dtype=torch.bfloat16):
-    """Load an SE3PLM checkpoint for evaluation."""
-    model = SE3PLMLightning.load_from_checkpoint(ckpt_path, map_location="cpu")
+    """Load an BioT checkpoint for evaluation."""
+    model = BioTLightning.load_from_checkpoint(ckpt_path, map_location="cpu")
     model = model.to(dtype=dtype, device=device)
     model.eval()
     return model
