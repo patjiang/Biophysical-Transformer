@@ -53,13 +53,13 @@ python CAID/caid.py \
 
 Copies the CAID3 demo predictors (AIUPred, AlphaFold-rsa, LIPNet) alongside BioT so the assessment produces a side-by-side comparison.
 
-### 4. View results
+### 4.1 View results (if preferred)
 
 ```bash
 cat results/disorder_pdb.analysis.all.dataset.default.metrics.csv
 ```
 
-### 5. Plot
+### 4.2 Plot (if preferred)
 
 ```bash
 python ../plot_caid.py metrics \
