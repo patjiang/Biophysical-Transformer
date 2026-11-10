@@ -16,12 +16,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
 
-from blocks import (
+from .blocks import (
     TransformerStackEnc, FactorizedMLMHead, InteractionTokenBlock,
     VoxelizeTrunk, collapse_penalty, effective_rank,
 )
-import loss as L
-from span_masking import span_mask_tokens
+import .loss as L
+from .span_masking import span_mask_tokens
 
 PAD_TOKEN_ID = 8000
 MASK_TOKEN_ID = 8001
