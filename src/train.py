@@ -67,7 +67,7 @@ NUM_WORKERS = 8
 
 BASE_LR = 1e-4
 DECODER_LR_FACTOR = 10.0  # inert in arm B (no decoder grad)
-N_ACC = 4                 # must match SE3PLMLightning.n_acc
+N_ACC = 4                 # must match BioTLightning.n_acc
 WARMUP_STEPS = 2000       # optimizer steps (~3 epochs at 700 steps/epoch)
 
 # Seed BEFORE datasets, loaders, and model.  workers=True gives each
@@ -223,7 +223,7 @@ class StepTimer(Callback):
 # different things in the two arms, so don't use it to select checkpoints.
 checkpoint_grid = ModelCheckpoint(
     dirpath=SAVE_DIR,
-    filename="se3plm_grid_{epoch:02d}",
+    filename="BioT_grid_{epoch:02d}",
     every_n_epochs=max(1, a.ckpt_every),
     save_top_k=-1,
     save_on_train_epoch_end=True,
@@ -231,7 +231,7 @@ checkpoint_grid = ModelCheckpoint(
 
 checkpoint_cb = ModelCheckpoint(
     dirpath=SAVE_DIR,
-    filename="se3plm_{epoch:02d}-{val_loss:.4f}",
+    filename="BioT_{epoch:02d}-{val_loss:.4f}",
     save_top_k=15,
     monitor="val_loss",
     mode="min",
@@ -239,7 +239,7 @@ checkpoint_cb = ModelCheckpoint(
 
 checkpoint_last = ModelCheckpoint(
     dirpath=SAVE_DIR,
-    filename="se3plm_last_{epoch:02d}",
+    filename="BioT_last_{epoch:02d}",
     save_top_k=1,
     monitor="epoch",
     mode="max",
@@ -248,7 +248,7 @@ checkpoint_last = ModelCheckpoint(
 # ------------------------------------------------------------------ model
 #
 # Every value is copied from run.py.  verify_ablation.py diffs this dict
-# against run.py's SE3PLMLightning(...) call, so drift is caught by a
+# against run.py's BioTLightning(...) call, so drift is caught by a
 # check rather than by a reader.
 
 HPARAMS = dict(
@@ -315,7 +315,7 @@ HPARAMS = dict(
     mlm_bias_path="mlm_unigram_bias.pt",
 )
 
-model = SE3PLMLightning(no_voxel=a.no_voxel, **HPARAMS)
+model = BioTLightning(no_voxel=a.no_voxel, **HPARAMS)
 
 # ----------------------------------------------------------------- logging
 
