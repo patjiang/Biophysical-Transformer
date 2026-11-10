@@ -1,26 +1,27 @@
 #!/usr/bin/env python
 """CAID intrinsic disorder prediction using BioT per-residue embeddings.
 
-Subcommands::
+Setup (run once from repo root)::
 
-    # Train a per-residue disorder probe on DisProt reference data
-    python caid_disorder.py train \\
-        --reference disprot_disorder_pdb.fasta \\
-        --ckpt checkpoints/BioT_voxel_s0.safetensors \\
+    bash tests/idr_bench/setup_caid.sh
+
+Train, predict, evaluate::
+
+    cd tests/idr_bench
+
+    python ../caid_disorder.py train \\
+        --reference CAID/demo-data/references/disorder_pdb.fasta \\
+        --ckpt ../../checkpoints/BioT_voxel_s0.safetensors \\
         --out probes/disorder.pkl
 
-    # Predict disorder on CAID target sequences
-    python caid_disorder.py predict \\
-        --fasta caid_targets.fasta \\
-        --ckpt checkpoints/BioT_voxel_s0.safetensors \\
+    python ../caid_disorder.py predict \\
+        --fasta CAID/demo-data/references/disorder_pdb.fasta \\
         --probe probes/disorder.pkl \\
         --out predictions/BioT.caid
 
-    # Cross-validate the probe (protein-level GroupKFold)
-    python caid_disorder.py cv \\
-        --reference disprot_disorder_pdb.fasta \\
-        --ckpt checkpoints/BioT_voxel_s0.safetensors \\
-        --folds 5
+    python CAID/caid.py \\
+        CAID/demo-data/references/disorder_pdb.fasta \\
+        predictions/ -o results/
 
 The reference FASTA follows the CAID format: three lines per protein
 (``>accession``, sequence, per-residue labels ``0``/``1``/``-``).
@@ -48,6 +49,7 @@ from src.data import seqs_to_tens
 K = 3
 BOS_ID = 8002
 MAX_REAL_TOKEN = 7999
+CKPT_DEFAULT = "checkpoints/BioT_voxel_s0.safetensors"
 
 LABEL_MAP = {"0": 0.0, "1": 1.0, "-": np.nan}
 AA20 = set("ACDEFGHIKLMNPQRSTVWY")
@@ -83,10 +85,8 @@ def _embed_window(model, tok_1d, device, layer="int"):
     """
     tokens = _add_bos_1d(tok_1d).to(device)
     if layer == "int":
-        # Interaction-block output: (B, n_kmers, D) — already sans BOS
         z = model.forward_int(tokens, pred=True)
     else:
-        # Encoder output: (B, 1+n_kmers, D) — strip BOS
         z = model.forward(tokens, pred=True)
         z = z[:, 1:]
     return z[0].float().cpu()
@@ -110,7 +110,6 @@ def per_residue_embeddings(model, seq, device, max_tokens=1024,
     if n_kmers <= 0:
         return None, clean
 
-    # --- embed k-mer tokens (single pass or sliding window) ---
     if n_kmers <= max_tokens:
         z = _embed_window(model, tok, device, layer)
     else:
@@ -129,9 +128,6 @@ def per_residue_embeddings(model, seq, device, max_tokens=1024,
                 break
         z = accum / counts.clamp(min=1)
 
-    # --- reduce k-mer embeddings to per-residue ---
-    # Token j covers residues [j, j+K-1].  For dr in {0,1,2} the
-    # slice ``z[:end]`` is added to ``res_z[dr:dr+end]``.
     D = z.shape[1]
     res_z = torch.zeros(L, D)
     res_c = torch.zeros(L)
@@ -211,7 +207,7 @@ def embed_labelled(model, entries, device, max_tokens=1024, stride=512,
     """Embed reference entries, returning ``(X, y, groups)``.
 
     Only labelled positions (non-NaN) are kept.  *groups* holds the
-    protein index for protein-level CV splits.
+    protein index for protein-level cross-validation splits.
     """
     X_parts, y_parts, g_parts = [], [], []
     skipped = 0
@@ -308,7 +304,12 @@ def cmd_predict(args):
     print(f"probe: {args.probe}  (trained on {probe.get('n_proteins', '?')} "
           f"proteins, AUC {probe.get('train_auc', 0):.4f})")
 
-    entries = parse_fasta(args.fasta)
+    # Accept both plain FASTA and CAID reference FASTA (just ignore labels)
+    try:
+        ref_entries = parse_reference_fasta(args.fasta)
+        entries = [(acc, seq) for acc, seq, _ in ref_entries]
+    except Exception:
+        entries = parse_fasta(args.fasta)
     print(f"  {len(entries)} target sequences")
 
     out_path = Path(args.out)
@@ -324,12 +325,10 @@ def cmd_predict(args):
                 stride=stride, layer=layer)
 
             if emb is None:
-                # Sequence too short — write zeros
                 scores = np.zeros(len(clean))
             else:
                 scores = clf.predict_proba(scaler.transform(emb))[:, 1]
 
-            # Pad if sanitize truncated relative to original
             if len(scores) < len(clean):
                 scores = np.pad(scores, (0, len(clean) - len(scores)))
 
@@ -402,44 +401,34 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def common(sp):
-        sp.add_argument("--ckpt", default="checkpoints/BioT_voxel_s0.safetensors")
+        sp.add_argument("--ckpt", default=CKPT_DEFAULT)
         sp.add_argument("--device",
                         default="cuda" if torch.cuda.is_available() else "cpu")
-        sp.add_argument("--max-tokens", type=int, default=1024,
-                        help="max k-mers per forward pass (default 1024)")
-        sp.add_argument("--stride", type=int, default=512,
-                        help="sliding-window stride for long sequences")
+        sp.add_argument("--max-tokens", type=int, default=1024)
+        sp.add_argument("--stride", type=int, default=512)
         sp.add_argument("--layer", default="int",
-                        choices=["int", "enc"],
-                        help="interaction block (default) or raw encoder")
+                        choices=["int", "enc"])
 
-    # train
-    s1 = sub.add_parser("train", help="train disorder probe on DisProt data")
+    s1 = sub.add_parser("train", help="train disorder probe on labelled data")
     common(s1)
     s1.add_argument("--reference", required=True,
                     help="CAID reference FASTA (>acc / seq / 0-1-dash labels)")
-    s1.add_argument("--C", type=float, default=1.0,
-                    help="logistic-regression inverse regularisation")
+    s1.add_argument("--C", type=float, default=1.0)
     s1.add_argument("--out", default="probes/disorder.pkl")
     s1.set_defaults(func=cmd_train)
 
-    # predict
     s2 = sub.add_parser("predict", help="predict disorder -> .caid output")
     common(s2)
     s2.add_argument("--fasta", required=True,
-                    help="target sequences (plain FASTA)")
+                    help="target sequences (FASTA or CAID reference FASTA)")
     s2.add_argument("--probe", required=True,
-                    help="trained probe (.pkl from `train`)")
-    s2.add_argument("--threshold", type=float, default=0.5,
-                    help="binary-state threshold (default 0.5; CAID "
-                         "assessment can also find the optimal one)")
+                    help="trained probe (.pkl from train)")
+    s2.add_argument("--threshold", type=float, default=0.5)
     s2.add_argument("--no-states", action="store_true",
-                    help="omit the binary column (let CAID pick the "
-                         "F1-optimal threshold)")
+                    help="omit binary column (let CAID pick threshold)")
     s2.add_argument("--out", default="predictions/BioT.caid")
     s2.set_defaults(func=cmd_predict)
 
-    # cv
     s3 = sub.add_parser("cv", help="cross-validate probe (protein-level)")
     common(s3)
     s3.add_argument("--reference", required=True)
