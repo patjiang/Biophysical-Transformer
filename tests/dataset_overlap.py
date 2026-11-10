@@ -1,80 +1,78 @@
 #!/usr/bin/env python
-"""Calculate sequence overlap between model training sets and the CAID IDR dataset.
+"""Training-set overlap for CAID benchmark proteins.
 
-Usage::
+Wraps the same 3-mer containment + shuffled null from fasta_overlap.py,
+but runs all compared models in one invocation::
 
-    # Check overlap of a training FASTA against CAID reference
     python dataset_overlap.py \\
-        --train training_sequences.fasta \\
         --caid CAID/demo-data/references/disorder_pdb.fasta \\
-        --threshold 0.80 \\
-        --out overlap_report.csv
+        --corpus esm2=training_sets/uniref50.fasta \\
+        --corpus alphafold=training_sets/pdb_seqres.fasta \\
+        --corpus biot=/path/to/biot_corpus.fasta \\
+        --out overlap/
 
-    # Multiple training sets at once
-    python dataset_overlap.py \\
-        --train esm2_train.fasta biot_train.fasta \\
-        --caid CAID/demo-data/references/disorder_pdb.fasta \\
-        --out overlap_report.csv
+For each corpus the script writes ``overlap/<name>.csv`` (one row per
+CAID protein, columns compatible with ``stack_check.py --exclude``) and
+prints a summary table comparing all models.
 
-For each training FASTA, reports how many CAID proteins appear in
-(or are highly similar to) the training set. Overlap is measured by
-normalised edit distance (1 - edit_distance / max_len) and by exact
-substring containment.
-
-The ``--hook`` flag accepts a Python script that defines a
-``get_training_sequences(path) -> list[str]`` function, for training
-sets stored in non-FASTA formats (HDF5, npz, etc.).
+The containment metric, threshold calibration and output columns are
+identical to ``fasta_overlap.py`` so results are directly comparable
+to the paper's pretraining-exposure audit.
 """
 
 import argparse
 import csv
 import hashlib
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 
+AA20 = set("ACDEFGHIKLMNPQRSTVWY")
 
-# --------------------------------------------------------------- parsing
 
-def parse_fasta(path):
-    """Parse a multi-line FASTA. Returns list of ``(acc, seq)``."""
-    entries = []
-    with open(path) as f:
-        acc, parts = None, []
-        for line in f:
+def log(s=""):
+    print(s, flush=True)
+
+
+def rule(c="-"):
+    log(c * 74)
+
+
+# ----------------------------------------------------------------- sequences
+
+def read_fasta(path):
+    """(id, sequence) pairs from a FASTA file."""
+    out, name, buf = [], None, []
+    with open(path) as fh:
+        for line in fh:
             line = line.strip()
-            if line.startswith(">"):
-                if acc is not None:
-                    entries.append((acc, "".join(parts).upper()))
-                acc = line[1:].split()[0]
-                parts = []
-            elif acc is not None and line:
-                parts.append(line)
-        if acc is not None:
-            entries.append((acc, "".join(parts).upper()))
-    return entries
+            if not line:
+                continue
+            if line[0] == ">":
+                if name is not None:
+                    out.append((name, "".join(buf)))
+                name, buf = line[1:].split()[0] if len(line) > 1 else "?", []
+            else:
+                buf.append(line.upper())
+    if name is not None:
+        out.append((name, "".join(buf)))
+    return out
 
 
-def parse_caid_reference(path):
-    """Parse CAID reference FASTA (>acc / seq / labels).
-
-    Returns list of ``(acc, seq)``.
-    """
+def read_caid_fasta(path):
+    """Parse CAID reference FASTA (>acc / seq / labels). Returns (id, seq)."""
+    label_chars = set("01-")
     entries = []
-    label_map = set("01-")
     with open(path) as f:
-        lines = [l.rstrip("\n\r") for l in f
-                 if l.strip() and not l.startswith("#")]
-
+        lines = [l.rstrip("\n\r") for l in f if l.strip() and not l.startswith("#")]
     i = 0
     while i < len(lines):
         if lines[i].startswith(">"):
             acc = lines[i][1:].split()[0]
             seq = lines[i + 1]
-            # Skip the label line if present
-            if i + 2 < len(lines) and set(lines[i + 2]) <= label_map:
+            # Skip label line if present
+            if i + 2 < len(lines) and set(lines[i + 2]) <= label_chars:
                 i += 3
             else:
                 i += 2
@@ -84,224 +82,219 @@ def parse_caid_reference(path):
     return entries
 
 
-# -------------------------------------------------------------- overlap
-
-def seq_hash(seq):
-    return hashlib.sha256(seq.encode()).hexdigest()
-
-
-def exact_match_overlap(train_seqs, caid_entries):
-    """Exact sequence match."""
-    train_hashes = {seq_hash(s) for s in train_seqs}
-    hits = []
-    for acc, seq in caid_entries:
-        if seq_hash(seq) in train_hashes:
-            hits.append(acc)
-    return set(hits)
+def kmers(s):
+    """Distinct 3-mers over the 20 standard residues."""
+    return {s[i:i + 3] for i in range(len(s) - 2)
+            if s[i] in AA20 and s[i + 1] in AA20 and s[i + 2] in AA20}
 
 
-def substring_overlap(train_seqs, caid_entries, min_len=30):
-    """Check if any CAID protein is a substring of a training sequence
-    or vice versa (above min_len)."""
-    hits = defaultdict(str)
-    # Build set of long training sequences for containment check
-    for acc, seq in caid_entries:
-        if len(seq) < min_len:
-            continue
-        for ts in train_seqs:
-            if seq in ts:
-                hits[acc] = "caid_in_train"
-                break
-            if ts in seq and len(ts) >= min_len:
-                hits[acc] = "train_in_caid"
-                break
-    return hits
+# ------------------------------------------------------------------- index
+
+class Index:
+    """Inverted 3-mer index for fast all-pairs containment."""
+
+    def __init__(self, kmer_sets):
+        self.sizes = np.array([len(s) for s in kmer_sets], dtype=np.int64)
+        self.n = len(kmer_sets)
+        vocab, rows, cols = {}, [], []
+        for j, s in enumerate(kmer_sets):
+            for w in s:
+                k = vocab.get(w)
+                if k is None:
+                    k = vocab[w] = len(vocab)
+                rows.append(k)
+                cols.append(j)
+        self.vocab = vocab
+        rows = np.asarray(rows, dtype=np.int64)
+        cols = np.asarray(cols, dtype=np.int64)
+        order = np.argsort(rows, kind="stable")
+        self.post = cols[order]
+        self.offs = np.searchsorted(rows[order], np.arange(len(vocab) + 1))
+
+    def best(self, q):
+        """(forward containment, corpus index, shared count)."""
+        ks = [self.vocab[w] for w in q if w in self.vocab]
+        if not ks:
+            return 0.0, -1, 0
+        c = np.bincount(np.concatenate(
+            [self.post[self.offs[k]:self.offs[k + 1]] for k in ks]),
+            minlength=self.n)
+        j = int(np.argmax(c))
+        return float(c[j]) / max(len(q), 1), j, int(c[j])
 
 
-def identity_overlap(train_seqs, caid_entries, threshold=0.80):
-    """Approximate identity by k-mer Jaccard as a fast pre-filter,
-    then exact normalised identity for candidates above threshold.
+# ---------------------------------------------------------- overlap check
 
-    Returns ``{acc: best_identity}`` for CAID proteins exceeding
-    the threshold.
-    """
-    K = 6
+def run_overlap(queries, corpus_kmer_sets, corpus_names, call=0.80,
+                min_kmers=30, null_reps=5, null_limit=2000, seed=0):
+    """Run overlap analysis. Returns (rows, summary_dict)."""
+    idx = Index(corpus_kmer_sets)
+    log(f"  {idx.n:,} corpus proteins, {len(idx.vocab):,} distinct 3-mers")
 
-    # Index training sequences by k-mer sets
-    print(f"  indexing {len(train_seqs)} training sequences (k={K})...")
-    train_kmer_sets = []
-    for seq in train_seqs:
-        kmers = {seq[i:i + K] for i in range(len(seq) - K + 1)}
-        train_kmer_sets.append(kmers)
+    # Score queries
+    rows, fwd = [], np.zeros(len(queries))
+    for i, (name, seq, kset) in enumerate(queries):
+        f, j, inter = idx.best(kset)
+        fwd[i] = f
+        rev = inter / max(int(idx.sizes[j]), 1) if j >= 0 else 0.0
+        rows.append({
+            "id": name,
+            "seq_sha1": hashlib.sha1(seq.encode()).hexdigest(),
+            "len": len(seq), "n_kmers": len(kset),
+            "forward": round(f, 4), "reverse": round(rev, 4),
+            "match": corpus_names[j] if j >= 0 else "",
+            "match_tokens": int(idx.sizes[j]) if j >= 0 else 0,
+            "kind": ("same-protein" if rev >= 0.80 else "query-is-fragment"),
+        })
+        if (i + 1) % 500 == 0:
+            log(f"    {i + 1:,}/{len(queries):,}")
 
-    hits = {}
-    for idx, (acc, cseq) in enumerate(caid_entries):
-        if len(cseq) < K:
-            continue
-        c_kmers = {cseq[i:i + K] for i in range(len(cseq) - K + 1)}
+    # Shuffled null
+    rng = np.random.default_rng(seed)
+    sub = queries[:null_limit]
+    null = []
+    for _, seq, _ in sub:
+        arr = np.frombuffer(seq.encode(), dtype="S1").copy()
+        for _ in range(null_reps):
+            rng.shuffle(arr)
+            k = kmers(arr.tobytes().decode())
+            if len(k) >= min_kmers:
+                null.append(idx.best(k)[0])
+    null = np.asarray(null) if null else np.zeros(1)
 
-        best_jaccard = 0
-        best_train_idx = -1
-        for ti, t_kmers in enumerate(train_kmer_sets):
-            if not t_kmers:
-                continue
-            jacc = len(c_kmers & t_kmers) / len(c_kmers | t_kmers)
-            if jacc > best_jaccard:
-                best_jaccard = jacc
-                best_train_idx = ti
-
-        # Only compute expensive alignment for promising candidates
-        if best_jaccard >= threshold * 0.5:
-            tseq = train_seqs[best_train_idx]
-            ident = _fast_identity(cseq, tseq)
-            if ident >= threshold:
-                hits[acc] = ident
-
-        if (idx + 1) % 100 == 0:
-            print(f"  checked {idx + 1}/{len(caid_entries)}", flush=True)
-
-    return hits
-
-
-def _fast_identity(s1, s2):
-    """Normalised identity: matching positions / max(len(s1), len(s2)).
-
-    For sequences of similar length, aligns by sliding the shorter
-    across the longer and taking the best window. For very different
-    lengths, returns the best local match fraction.
-    """
-    if len(s1) > len(s2):
-        s1, s2 = s2, s1
-    if len(s1) == 0:
-        return 0.0
-
-    # If same length, just count matches
-    if len(s1) == len(s2):
-        matches = sum(a == b for a, b in zip(s1, s2))
-        return matches / len(s1)
-
-    # Slide shorter across longer
-    best = 0
-    for offset in range(len(s2) - len(s1) + 1):
-        matches = sum(a == b for a, b in zip(s1, s2[offset:offset + len(s1)]))
-        best = max(best, matches)
-    return best / max(len(s1), len(s2))
+    n_call = int((fwd >= call).sum())
+    summary = {
+        "n_query": len(queries),
+        "n_flagged": n_call,
+        "pct_flagged": n_call / max(len(queries), 1),
+        "null_max": float(null.max()),
+        "null_valid": null.max() < call,
+        "median_fwd": float(np.median(fwd)),
+        "p99_fwd": float(np.quantile(fwd, 0.99)),
+    }
+    return rows, summary
 
 
-# ----------------------------------------------------------------- main
-
-def cmd_overlap(args):
-    # Parse CAID reference
-    caid = parse_caid_reference(args.caid)
-    print(f"CAID reference: {len(caid)} proteins from {args.caid}")
-
-    rows = []
-
-    for train_path in args.train:
-        train_path = Path(train_path)
-        name = train_path.stem
-        print(f"\n{'=' * 60}")
-        print(f"Training set: {name} ({train_path})")
-        print(f"{'=' * 60}")
-
-        # Load training sequences
-        if args.hook:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("hook", args.hook)
-            hook = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(hook)
-            train_seqs = hook.get_training_sequences(str(train_path))
-        else:
-            train_entries = parse_fasta(str(train_path))
-            train_seqs = [seq for _, seq in train_entries]
-
-        print(f"  {len(train_seqs)} training sequences loaded")
-
-        # Exact matches
-        exact = exact_match_overlap(train_seqs, caid)
-        print(f"  exact matches: {len(exact)}/{len(caid)} "
-              f"({len(exact) / len(caid):.1%})")
-
-        # Substring containment
-        substr = substring_overlap(train_seqs, caid)
-        print(f"  substring containment: {len(substr)}/{len(caid)} "
-              f"({len(substr) / len(caid):.1%})")
-
-        # Identity threshold
-        ident = identity_overlap(train_seqs, caid, threshold=args.threshold)
-        print(f"  identity >= {args.threshold:.0%}: {len(ident)}/{len(caid)} "
-              f"({len(ident) / len(caid):.1%})")
-
-        # Combined
-        all_overlap = exact | set(substr.keys()) | set(ident.keys())
-        print(f"  any overlap: {len(all_overlap)}/{len(caid)} "
-              f"({len(all_overlap) / len(caid):.1%})")
-
-        for acc, seq in caid:
-            row = {
-                "caid_acc": acc,
-                "train_set": name,
-                "seq_len": len(seq),
-                "exact_match": acc in exact,
-                "substring": substr.get(acc, ""),
-                "best_identity": ident.get(acc, 0.0),
-                "overlaps": acc in all_overlap,
-            }
-            rows.append(row)
-
-    # Write report
-    if args.out:
-        out = Path(args.out)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        df = pd.DataFrame(rows)
-        df.to_csv(out, index=False)
-        print(f"\nwrote {out} ({len(df)} rows)")
-
-    # Summary table
-    print(f"\n{'=' * 60}")
-    print("SUMMARY")
-    print(f"{'=' * 60}")
-    print(f"  {'training set':<25} {'exact':>6} {'substr':>7} "
-          f"{'ident':>6} {'any':>6} {'total':>6}")
-    print(f"  {'-' * 25} {'-' * 6} {'-' * 7} {'-' * 6} {'-' * 6} {'-' * 6}")
-    for train_path in args.train:
-        name = Path(train_path).stem
-        subset = [r for r in rows if r["train_set"] == name]
-        n_exact = sum(r["exact_match"] for r in subset)
-        n_substr = sum(bool(r["substring"]) for r in subset)
-        n_ident = sum(r["best_identity"] >= args.threshold for r in subset)
-        n_any = sum(r["overlaps"] for r in subset)
-        print(f"  {name:<25} {n_exact:>6} {n_substr:>7} "
-              f"{n_ident:>6} {n_any:>6} {len(caid):>6}")
-
-
-try:
-    import pandas as pd
-except ImportError:
-    pd = None
-
+# ------------------------------------------------------------------- main
 
 def main():
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--train", nargs="+", required=True,
-                   help="training set FASTA file(s)")
     p.add_argument("--caid", required=True,
-                   help="CAID reference FASTA")
-    p.add_argument("--threshold", type=float, default=0.80,
-                   help="sequence identity threshold (default 0.80)")
-    p.add_argument("--hook", default=None,
-                   help="Python script defining get_training_sequences(path)")
-    p.add_argument("--out", default="overlap_report.csv")
-    args = p.parse_args()
+                   help="CAID reference FASTA (query sequences)")
+    p.add_argument("--corpus", action="append", required=True,
+                   metavar="NAME=PATH",
+                   help="training-set FASTA, e.g. esm2=training_sets/uniref50.fasta")
+    p.add_argument("--call", type=float, default=0.80,
+                   help="containment threshold for flagging overlap")
+    p.add_argument("--min-kmers", type=int, default=30)
+    p.add_argument("--null-reps", type=int, default=5)
+    p.add_argument("--null-limit", type=int, default=2000)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--out", default="overlap/",
+                   help="output directory for per-corpus CSVs")
+    a = p.parse_args()
 
-    if pd is None and args.out:
-        print("warning: pandas not available, skipping CSV output")
-        args.out = None
+    # Parse corpus arguments
+    corpora = []
+    for spec in a.corpus:
+        if "=" in spec:
+            name, path = spec.split("=", 1)
+        else:
+            name = Path(spec).stem
+            path = spec
+        corpora.append((name.strip(), path.strip()))
 
-    cmd_overlap(args)
+    # Load CAID query sequences
+    rule("=")
+    log("dataset_overlap.py")
+    rule("=")
+    log(f"  CAID reference: {a.caid}")
+    caid_entries = read_caid_fasta(a.caid)
+    queries = []
+    short = 0
+    for name, seq in caid_entries:
+        k = kmers(seq)
+        if len(k) < a.min_kmers:
+            short += 1
+            continue
+        queries.append((name, seq, k))
+    log(f"  {len(queries):,} query proteins"
+        + (f" ({short:,} excluded under --min-kmers {a.min_kmers})"
+           if short else ""))
+    log()
+
+    out_dir = Path(a.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Run each corpus
+    all_summaries = []
+    cols = ["id", "seq_sha1", "len", "n_kmers", "forward", "reverse",
+            "match", "match_tokens", "kind"]
+
+    for corpus_name, corpus_path in corpora:
+        rule("=")
+        log(f"CORPUS: {corpus_name}  ({corpus_path})")
+        rule("=")
+
+        log("  loading corpus...")
+        raw = read_fasta(corpus_path)
+        corpus_ksets = []
+        corpus_names = []
+        for n, s in raw:
+            k = kmers(s)
+            if k:
+                corpus_ksets.append(k)
+                corpus_names.append(n)
+        log(f"  {len(corpus_ksets):,} proteins with valid 3-mers")
+
+        log("  building index and scoring...")
+        rows, summary = run_overlap(
+            queries, corpus_ksets, corpus_names,
+            call=a.call, min_kmers=a.min_kmers,
+            null_reps=a.null_reps, null_limit=a.null_limit, seed=a.seed)
+
+        # Write CSV
+        csv_path = out_dir / f"{corpus_name}.csv"
+        with open(csv_path, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=cols)
+            w.writeheader()
+            for r in sorted(rows, key=lambda x: -x["forward"]):
+                w.writerow(r)
+        log(f"  wrote {csv_path}")
+
+        # Print per-corpus summary
+        fwd = np.array([r["forward"] for r in rows])
+        log()
+        log(f"  {'median':>9}{'99th':>9}{'max':>9}{'flagged':>12}")
+        log(f"  {np.median(fwd):>9.3f}{np.quantile(fwd, .99):>9.3f}"
+            f"{fwd.max():>9.3f}"
+            f"  {summary['n_flagged']:>5}/{len(queries)}"
+            f" ({summary['pct_flagged']:.1%})")
+        if not summary["null_valid"]:
+            log(f"  !! null max {summary['null_max']:.3f} >= --call {a.call} "
+                f"-- threshold not calibrated for this corpus")
+        log()
+
+        summary["name"] = corpus_name
+        all_summaries.append(summary)
+
+    # Final comparison table
+    rule("=")
+    log("COMPARISON")
+    rule("=")
+    log(f"  {'corpus':<20} {'flagged':>10} {'rate':>8} "
+        f"{'null_max':>10} {'calibrated':>12}")
+    rule(".")
+    for s in all_summaries:
+        cal = "YES" if s["null_valid"] else "NO"
+        log(f"  {s['name']:<20} {s['n_flagged']:>10} "
+            f"{s['pct_flagged']:>7.1%} "
+            f"{s['null_max']:>10.3f} {cal:>12}")
+    rule("=")
+    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main() or 0)
+    sys.exit(main())
