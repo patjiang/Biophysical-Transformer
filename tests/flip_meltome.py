@@ -4,7 +4,7 @@
 Three subcommands::
 
     python flip_meltome.py embed --data flip_data/meltome/mixed_split.csv \\
-        --ckpt chkpts/se3plm.ckpt --out meltome_emb --max-tokens 1024
+        --ckpt checkpoints/se3plm_voxel_s0.safetensors --out meltome_emb --max-tokens 1024
     python flip_meltome.py run --emb meltome_emb --out meltome_results
     python flip_meltome.py postmortem --results meltome_results
 
@@ -816,7 +816,7 @@ def main():
 
     e = sub.add_parser("embed")
     e.add_argument("--data", required=True)
-    e.add_argument("--ckpt", default="chkpts/se3plm.ckpt",
+    e.add_argument("--ckpt", default="checkpoints/se3plm_voxel_s0.safetensors",
                    help="SE3PLM checkpoint; ignored when --esm is given")
     e.add_argument("--esm", default=None, metavar="MODEL",
                    help="embed with fair-esm instead, e.g. esm2_t33_650M_UR50D")
