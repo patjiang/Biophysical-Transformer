@@ -1,20 +1,36 @@
-# SE3PLM
+# Beyond Sequence and Structure: Pretraining PLMs on Continuous Biophysical Fields
 
-Code for *<PAPER TITLE>* (<VENUE/YEAR>).
+<p align="center">
+  <img src="assets/fig_overview.png" width="680" alt="SE3PLM overview: sequence to stride-1 3-mer tokens to electrostatic field reconstruction"/>
+</p>
 
-SE3PLM learns per-residue representations by reconstructing local electrostatic
-environments through a rotationally-invariant spherical-harmonic descriptor,
-jointly with masked language modelling, DINO and iBOT. The encoder is a small
-RoPE transformer (5 layers, d=64) over stride-1 3-mer tokens. The paper's
-central claim is a paired comparison between this model and a matched control
-that drops the voxel objective (`--no-voxel`), transferred to FLIP Meltome
-thermostability.
+Most protein language models learn from sequence alone. Structure-aware models
+add discrete atomic coordinates. We ask: what if the pretraining target were a
+*continuous physical field* -- the electrostatic environment around each
+residue?
+
+The **Biophysical Transformer** (BioT) is a small RoPE transformer encoder
+(5 layers, d=64, ~0.7M parameters) pretrained over stride-1 3-mer tokens.
+Each token's local electrostatic potential -- a 33³ voxel box computed by APBS
+from the folded structure -- is reconstructed through a rotationally-invariant
+spherical-harmonic descriptor, jointly with masked language modelling, DINO and
+iBOT. The descriptor makes the loss frame-free: a correct shape scores well in
+*any* orientation, and a sphere scores worst.
+
+On FLIP Meltome thermostability, this closes **8%** of the gap between an
+untrained ESM and ESM-1v -- with 600× fewer parameters and 4,700× fewer
+pretraining sequences. A matched control arm that drops the field objective
+(`--no-voxel`) isolates the contribution: the difference survives
+composition control and pretraining-overlap removal.
+
+> **Built with** Python 3.10 · PyTorch 2.6 · CUDA 12.6 · PyTorch Lightning 2.5 · [se3cnn](https://github.com/patjiang/se3cnn-patch)
 
 ---
 
 ## Setup
 
-### Automatic (recommended)
+<details>
+<summary><b>Automatic (recommended)</b></summary>
 
 ```bash
 bash setup.sh
@@ -29,17 +45,16 @@ for equivariant 3D convolutions, and all remaining dependencies. It skips
 creation if the environment already exists, and runs a quick SE3 convolution
 smoke test at the end.
 
-`pip install -e .` makes `src/` importable so the evaluation scripts in
-`tests/` can find the model code.
+`pip install -e .` makes `src/` importable so the scripts in `tests/` can find
+the model code.
 
-`test.py` is the full integration check: it builds the encoder, the
-interaction block, the voxel decoder, and the Lightning module, then runs a
-forward pass and verifies the output shapes. If it passes, you're ready.
+`test.py` is the full integration check: encoder, interaction block, voxel
+decoder, and Lightning module forward pass. If it passes, you're ready.
 
-### Manual (step by step)
+</details>
 
-If you'd rather see what each piece does, or need to adapt something for your
-system:
+<details>
+<summary><b>Manual (step by step)</b></summary>
 
 **1. Create the environment**
 
@@ -104,25 +119,27 @@ pip install -e .
 python test.py
 ```
 
+</details>
+
 ---
 
-## What you can reproduce today
+## What can be reproduced out of the box
 
-**Everything downstream of FLIP Meltome.** FLIP is a public benchmark, and
-the released checkpoints are all you need. That covers the main transfer
-table, the composition-controlled analysis, the pretraining-exposure audit,
-and the restricted re-run -- the paper's headline numbers and the appendix
-that stress-tests them.
+**Everything downstream of FLIP Meltome.** FLIP is a public benchmark, and the
+released checkpoints are all you need. That covers the main transfer table, the
+composition-controlled analysis, the pretraining-exposure audit, and the
+restricted re-run.
 
 **The pretraining corpus is not yet public.** The electrostatic volume dataset
-(~21k proteins, 33³ potential boxes) will be released separately. Until then,
-the field-accuracy ladder, descriptor breakdown, frame-assumption tests and
-reconstruction figures are not independently reproducible. We'd rather say so
-than ship scripts that can't run.
+(~21k proteins, 33³ potential boxes) will be released separately. Due to the
+large size of the dataset, it's difficult to find a good hosting solution.
 
 ---
 
 ## Repository layout
+
+<details>
+<summary><b>File tree</b></summary>
 
 ```
 setup.sh               environment setup (conda + dependencies)
@@ -148,6 +165,8 @@ tests/                 evaluation and analysis scripts
   run_rerun.sh           drives the full and overlap-removed re-run
 ```
 
+</details>
+
 ---
 
 ## Reproducing the Meltome results
@@ -162,7 +181,8 @@ the control is not optional.
 
 Each arm is evaluated at its own best validation epoch.
 
-### Step 1 — Embed and fit probes
+<details>
+<summary><b>Step 1 — Embed and fit probes</b></summary>
 
 ```bash
 python tests/flip_meltome.py embed --help
@@ -180,7 +200,10 @@ res_{novox,voxel}_{human,human_cell,mixed_split}_{e79,e75}
 mt_{novox,voxel}_{human,human_cell,mixed_split}_{e79,e75}
 ```
 
-### Step 2 — Arm deltas and composition control
+</details>
+
+<details>
+<summary><b>Step 2 — Arm deltas and composition control</b></summary>
 
 ```bash
 python tests/stack_check.py --arm attn \
@@ -191,7 +214,10 @@ python tests/stack_check.py --arm attn \
 
 This backs the main transfer table and the composition-controlled table.
 
-### Step 3 — Pretraining-exposure audit
+</details>
+
+<details>
+<summary><b>Step 3 — Pretraining-exposure audit</b></summary>
 
 ```bash
 python tests/overlap_audit.py \
@@ -200,14 +226,16 @@ python tests/overlap_audit.py \
 ```
 
 Writes `candidates.csv` (the overlap call per test protein) and the JSON the
-figures use. The `0.80` threshold comes from the shuffled null and is used
-everywhere a single number is needed.
+figures use. The `0.80` threshold comes from the shuffled null.
 
 > **Note:** this step reads the corpus and can't run until the data is
 > released. The `overlap_audit/` directory ships pre-computed so everything
 > downstream works without it.
 
-### Step 4 — Restricted re-run (overlap removal)
+</details>
+
+<details>
+<summary><b>Step 4 — Restricted re-run (overlap removal)</b></summary>
 
 ```bash
 bash tests/run_rerun.sh --dry     # check paths, discover arms, run nothing
@@ -217,7 +245,10 @@ bash tests/run_rerun.sh           # the real thing
 Always `--dry` first -- it verifies all twelve directories exist and discovers
 which probe heads the predictions tables actually have.
 
-### Step 5 — Species stratification
+</details>
+
+<details>
+<summary><b>Step 5 — Species stratification</b></summary>
 
 ```bash
 python tests/organism_table.py \
@@ -231,15 +262,38 @@ Prints a ready `stack_check --restrict-to` command for each organism group
 large enough to carry an interval (≥200 proteins). Compare each group against
 the full mixed-split value, not against other groups.
 
-### Step 6 — Figures
+</details>
+
+<details>
+<summary><b>Step 6 — Figures</b></summary>
 
 ```bash
 python tests/make_figures.py --audit overlap_audit --rerun rerun
 ```
 
+</details>
+
+<br>
+
+<p align="center">
+  <img src="assets/fig_impact.png" width="780" alt="Impact summary: parameter and data efficiency, benchmark overlap, composition-controlled results"/>
+</p>
+
+<p align="center">
+  <em>
+    <b>(a-b)</b> BioT reaches ρ = 0.61 on FLIP Meltome (human split) with 600× fewer
+    parameters and 4,700× fewer pretraining sequences than ESM-1v.
+    <b>(c)</b> Only 7% of the benchmark overlaps BioT's corpus, vs 95% for ESM.
+    <b>(d)</b> The field-minus-control difference survives full composition control
+    on the human and human_cell splits (* = 95% CI excludes zero).
+    <b>(e)</b> The field objective closes 8% of the gap to ESM-1v; 53% remains.
+  </em>
+</p>
+
 ---
 
-## A few things to know
+<details>
+<summary><b>A few things to know</b></summary>
 
 - **Batch size is 1.** The voxel tensor's first dimension is the residue
   count, not the protein count.
@@ -250,6 +304,8 @@ python tests/make_figures.py --audit overlap_audit --rerun rerun
   original token at masked positions.
 - **Embedding caches must carry a `sequence` field.** `stack_check` refuses
   a cache without one, because joining on row index risks silent misalignment.
+
+</details>
 
 ---
 
@@ -265,7 +321,7 @@ and the frame assumption are not independently checkable.
 
 ```bibtex
 @inproceedings{<KEY>,
-  title     = {<PAPER TITLE>},
+  title     = {Beyond Sequence and Structure: Pretraining PLMs on Continuous Biophysical Fields},
   author    = {<AUTHORS>},
   booktitle = {<VENUE>},
   year      = {<YEAR>}
