@@ -1,7 +1,7 @@
 # Beyond Sequence and Structure: Pretraining PLMs on Continuous Biophysical Fields
 
 <p align="center">
-  <img src="assets/fig_overview.png" width="400" alt="SE3PLM overview: sequence to stride-1 3-mer tokens to electrostatic field reconstruction"/>
+  <img src="assets/fig_overview.png" width="50%" alt="SE3PLM overview: sequence to stride-1 3-mer tokens to electrostatic field reconstruction"/>
 </p>
 
 Most protein language models learn from sequence alone. Structure-aware models
