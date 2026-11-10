@@ -6,22 +6,25 @@
 
 Most protein language models learn from sequence alone. Structure-aware models
 add discrete atomic coordinates. We ask: what if the pretraining target were a
-*continuous physical field* -- the electrostatic environment around each
-residue?
+continuous physical field — the electrostatic environment each residue
+creates?
 
-The **Biophysical Transformer** (BioT) is a small RoPE transformer encoder
-(5 layers, d=64, ~0.7M parameters) pretrained over stride-1 3-mer tokens.
-Each token's local electrostatic potential -- a 33³ voxel box computed by APBS
-from the folded structure -- is reconstructed through a rotationally-invariant
-spherical-harmonic descriptor, jointly with masked language modelling, DINO and
-iBOT. The descriptor makes the loss frame-free: a correct shape scores well in
-*any* orientation, and a sphere scores worst.
+The Biophysical Transformer (BioT) is a small RoPE transformer encoder
+(5 layers, d = 64, ~679K encoder parameters) pretrained on stride-1 3-mer
+tokens drawn from CATH structures. Each token carries its local electrostatic
+potential — a 33³ voxel grid computed by APBS from the deposited structure —
+and a rotationally invariant spherical-harmonic descriptor turns this into a
+frame-free loss: a correct field shape scores well in any orientation, while
+a featureless sphere scores worst. The field objective trains jointly with
+masked language modelling, DINO and iBOT.
 
-On FLIP Meltome thermostability, this closes **8%** of the gap between an
-untrained ESM and ESM-1v -- with 600× fewer parameters and 4,700× fewer
-pretraining sequences. A matched control arm that drops the field objective
-(`--no-voxel`) isolates the contribution: the difference survives
-composition control and pretraining-overlap removal.
+On FLIP Meltome thermostability, this closes 8 % of the gap between an
+untrained 650M-parameter ESM encoder and ESM-1v on the human split — with
+600× fewer parameters and 4,700× fewer pretraining sequences. A matched
+one-flag control (--no-voxel) that is bit-identical at initialisation
+isolates the contribution: the field arm’s advantage survives residualising
+400-dimensional dipeptide composition and removing the 7 % of test proteins
+that overlap the pretraining corpus.
 
 > **Built with** Python 3.10 · PyTorch 2.6 · CUDA 12.6 · PyTorch Lightning 2.5 · [se3cnn](https://github.com/patjiang/se3cnn-patch)
 
@@ -279,20 +282,12 @@ python tests/make_figures.py --audit overlap_audit --rerun rerun
 
 <br>
 
-<p align="center">
-  <img src="assets/fig_impact.png" width="780" alt="Impact summary: parameter and data efficiency, benchmark overlap, composition-controlled results"/>
-</p>
 
-<p align="center">
-  <em>
-    <b>(a-b)</b> BioT reaches ρ = 0.61 on FLIP Meltome (human split) with 600× fewer
-    parameters and 4,700× fewer pretraining sequences than ESM-1v.
-    <b>(c)</b> Only 7% of the benchmark overlaps BioT's corpus, vs 95% for ESM.
-    <b>(d)</b> The field-minus-control difference survives full composition control
-    on the human and human_cell splits (* = 95% CI excludes zero).
-    <b>(e)</b> The field objective closes 8% of the gap to ESM-1v; 53% remains.
-  </em>
-</p>
+
+<p align="center"> <img src="assets/fig_impact.png" width="100%" alt="Impact summary: parameter and data efficiency, benchmark overlap, composition-controlled results, and gap closure"/> 
+</p> 
+
+<p align="center"> <em> <b>(a–b)</b>&ensp;BioT reaches ρ&nbsp;=&nbsp;0.60 on FLIP Meltome (human split) with 600× fewer parameters and 4,700× fewer pretraining sequences than ESM-1v. <b>(c)</b>&ensp;Only 7% of test proteins overlap BioT's pretraining corpus, versus ~95% for ESM. <b>(d)</b>&ensp;The field-minus-control Δ survives full dipeptide composition control on the human and human_cell splits (* = 95% CI excludes zero). <b>(e)</b>&ensp;The field objective adds 8% of the untrained-to-ESM-1v gap; 53% remains. </em> </p>
 
 ---
 
