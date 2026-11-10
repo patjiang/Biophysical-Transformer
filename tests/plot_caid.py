@@ -101,15 +101,8 @@ def parse_caid_scores(path):
 
 # ------------------------------------------------------------------ PCA
 
-def _embed_proteins(args):
-    """Mean-pool per-residue BioT embeddings to one vector per protein."""
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-    from caid_disorder import Embedder, parse_reference_fasta
-
-    embedder = Embedder(args)
-    entries = parse_reference_fasta(args.reference)
-
+def _embed_proteins_with(embedder, entries):
+    """Mean-pool per-residue embeddings to one vector per protein."""
     vecs, pcts, accs = [], [], []
     for idx, (acc, seq, labels) in enumerate(entries):
         emb, clean = embedder.per_residue(seq)
@@ -120,70 +113,84 @@ def _embed_proteins(args):
         mask = ~np.isnan(lab)
         if mask.sum() == 0:
             continue
-
         vecs.append(emb[:L].mean(axis=0))
         pcts.append(lab[mask].sum() / mask.sum())
         accs.append(acc)
-
         if (idx + 1) % 50 == 0 or idx + 1 == len(entries):
             print(f"  embedded {idx + 1}/{len(entries)}", flush=True)
-
     return np.stack(vecs), np.array(pcts), accs
 
 
+def _pca_panel(ax, xy, pct, var_ratio, title):
+    """Draw one PCA scatter panel coloured by % disorder."""
+    sc = ax.scatter(xy[:, 0], xy[:, 1], c=pct, cmap="RdYlBu_r",
+                    vmin=0, vmax=1, s=18, alpha=0.8,
+                    linewidths=0, rasterized=True)
+    ax.set_xlabel(f"PC1 ({var_ratio[0]:.0%})", fontsize=9)
+    ax.set_ylabel(f"PC2 ({var_ratio[1]:.0%})", fontsize=9)
+    ax.set_title(title, fontsize=10, fontweight="bold")
+    return sc
+
+
 def cmd_pca(args):
-    """PCA of BioT embeddings with one panel per predictor."""
+    """PCA of each model's own embedding space, coloured by % disorder.
+
+    Top row: BioT and ESM2 (each in their own PCA).
+    Bottom row: .caid predictor scores projected into BioT's PCA
+    (score-coloured, for visual reference only).
+    """
     from sklearn.decomposition import PCA
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from caid_disorder import Embedder, parse_reference_fasta
+    import types
 
-    # Embed proteins with BioT
-    X, pct_gt, accs = _embed_proteins(args)
-    print(f"  {len(X)} proteins, D={X.shape[1]}")
+    entries = parse_reference_fasta(args.reference)
+    n_prot = len(entries)
 
-    pca = PCA(n_components=2).fit(X)
-    xy = pca.transform(X)
+    # ── Top row: real embedding spaces ──
+    embedding_models = []
 
-    # Collect predictor scores from .caid files
-    pred_dir = Path(args.predictions)
-    predictors = {}
-    if pred_dir.is_dir():
-        for p in sorted(pred_dir.glob("*.caid")):
-            name = p.stem
-            scores = parse_caid_scores(p)
-            # Map to same protein order as embeddings
-            vals = np.array([scores.get(a, np.nan) for a in accs])
-            if np.isnan(vals).all():
-                continue
-            predictors[name] = vals
+    # BioT
+    print("Embedding with BioT...")
+    biot_args = types.SimpleNamespace(
+        ckpt=args.ckpt, esm=None, device=args.device,
+        max_tokens=args.max_tokens, stride=args.stride, layer=args.layer)
+    biot_emb = Embedder(biot_args)
+    X_b, pct_b, acc_b = _embed_proteins_with(biot_emb, entries)
+    pca_b = PCA(n_components=2).fit(X_b)
+    xy_b = pca_b.transform(X_b)
+    embedding_models.append(("BioT", xy_b, pct_b, pca_b.explained_variance_ratio_))
+    print(f"  BioT: {len(X_b)} proteins, D={X_b.shape[1]}")
 
-    # Panel layout: ground truth + each predictor
-    panels = [("Ground truth (% disordered)", pct_gt)]
-    for name, vals in predictors.items():
-        panels.append((name, vals))
+    # ESM2
+    esm_name = args.esm or "esm2_t33_650M_UR50D"
+    print(f"Embedding with {esm_name}...")
+    esm_args = types.SimpleNamespace(
+        ckpt=None, esm=esm_name, device=args.device,
+        max_tokens=1022, stride=511, layer="int")
+    try:
+        esm_emb = Embedder(esm_args)
+        X_e, pct_e, acc_e = _embed_proteins_with(esm_emb, entries)
+        pca_e = PCA(n_components=2).fit(X_e)
+        xy_e = pca_e.transform(X_e)
+        embedding_models.append((esm_name, xy_e, pct_e, pca_e.explained_variance_ratio_))
+        print(f"  ESM2: {len(X_e)} proteins, D={X_e.shape[1]}")
+    except SystemExit as e:
+        print(f"  ESM2 skipped: {e}")
 
-    n_panels = len(panels)
-    fig, axes = plt.subplots(1, n_panels,
-                             figsize=(4.5 * n_panels, 4),
-                             squeeze=False)
+    # ── Layout: side by side ──
+    n = len(embedding_models)
+    fig, axes = plt.subplots(1, n, figsize=(5.5 * n, 4.5), squeeze=False)
 
-    for col, (title, cvals) in enumerate(panels):
-        ax = axes[0, col]
-        sc = ax.scatter(xy[:, 0], xy[:, 1], c=cvals, cmap="RdYlBu_r",
-                        vmin=0, vmax=1, s=14, alpha=0.8,
-                        linewidths=0, rasterized=True)
-        cb = fig.colorbar(sc, ax=ax, pad=0.02, shrink=0.85)
-        cb.set_label("score", fontsize=8)
-        ax.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]:.0%})",
-                      fontsize=9)
-        if col == 0:
-            ax.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]:.0%})",
-                          fontsize=9)
-        else:
-            ax.set_yticklabels([])
-        ax.set_title(title, fontsize=9, fontweight="bold")
+    for col, (name, xy, pct, var) in enumerate(embedding_models):
+        sc = _pca_panel(axes[0, col], xy, pct, var, name)
 
-    fig.suptitle(f"BioT embedding PCA ({len(X)} proteins)", fontsize=11,
-                 fontweight="bold", y=1.02)
-    fig.tight_layout()
+    cb = fig.colorbar(sc, ax=axes.ravel().tolist(),
+                      pad=0.02, shrink=0.85, location="right")
+    cb.set_label("% disordered", fontsize=9)
+
+    fig.suptitle(f"Embedding PCA — {n_prot} CAID proteins", fontsize=12,
+                 fontweight="bold")
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -213,11 +220,11 @@ def main():
 
     # pca
     s2 = sub.add_parser("pca",
-                         help="PCA of mean-pooled embeddings, one panel per predictor")
+                         help="PCA of each model's own latent space")
     s2.add_argument("--reference", required=True)
-    s2.add_argument("--predictions", default="predictions/",
-                    help="directory of .caid files (one panel per file)")
     s2.add_argument("--ckpt", default="checkpoints/BioT_voxel_s0.safetensors")
+    s2.add_argument("--esm", default=None, metavar="MODEL",
+                    help="ESM2 model name (default: esm2_t33_650M_UR50D)")
     s2.add_argument("--device",
                     default="cuda" if torch.cuda.is_available() else "cpu")
     s2.add_argument("--max-tokens", type=int, default=1024)
