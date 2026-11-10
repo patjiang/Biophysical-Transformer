@@ -1,4 +1,4 @@
-"""Data loading and collation for SE3PLM training."""
+"""Data loading and collation for BioT training."""
 
 import os
 from itertools import chain
