@@ -41,7 +41,7 @@ from src.data import *     # noqa: F401,F403
 
 torch.set_num_threads(1)
 
-CKPT_PATH = "/project/mayo/jiangp/biot/chkpts/nbt_0.884.ckpt"
+CKPT_PATH = "../tests/ckpts/voxel.ckpt"
 
 VOCAB_SIZE = 8003
 BOS_ID = 8002
