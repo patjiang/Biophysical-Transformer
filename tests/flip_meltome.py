@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""FLIP Meltome (mixed split) evaluation for the SE3PLM encoder.
+"""FLIP Meltome (mixed split) evaluation for the BioT encoder.
 
 Three subcommands::
 
     python flip_meltome.py embed --data flip_data/meltome/mixed_split.csv \\
-        --ckpt checkpoints/se3plm_voxel_s0.safetensors --out meltome_emb --max-tokens 1024
+        --ckpt checkpoints/BioT_voxel_s0.safetensors --out meltome_emb --max-tokens 1024
     python flip_meltome.py run --emb meltome_emb --out meltome_results
     python flip_meltome.py postmortem --results meltome_results
 
@@ -120,9 +120,9 @@ def context_embed(model, ids, stride, device, token_budget=1 << 16,
 # ------------------------------------------------------- encoder backends
 
 class SE3Backend:
-    """SE3PLM encoder, producing the same cache format as ``ESMBackend``."""
+    """BioT encoder, producing the same cache format as ``ESMBackend``."""
 
-    name = "se3plm"
+    name = "BioT"
 
     def __init__(self, args):
         from src.eval_utils import load_model, sanitize
@@ -269,7 +269,7 @@ def cmd_embed(args):
 
     backend = ESMBackend(args) if args.esm else SE3Backend(args)
     if args.esm and args.ctx:
-        raise SystemExit("--ctx is an SE3PLM masking trick with no ESM "
+        raise SystemExit("--ctx is an BioT masking trick with no ESM "
                          "counterpart; pass --no-ctx")
     print(f"backend {backend.name} ({backend.tag}) on {args.device}")
 
@@ -609,7 +609,7 @@ def cmd_run(args):
     y = d["target"].numpy()
     print(f"train={len(tr)} val={len(va)} test={len(te)}  dim={meta['dim']}  "
           f"max_tokens={meta['max_tokens']}")
-    print(f"cache: backend={meta.get('backend', 'se3plm')} "
+    print(f"cache: backend={meta.get('backend', 'BioT')} "
           f"model={meta.get('model', meta.get('ckpt'))} "
           f"project={meta.get('project')}  "
           f"embed_tensor={meta.get('embed_tensor', 'forward_int')}  "
@@ -816,8 +816,8 @@ def main():
 
     e = sub.add_parser("embed")
     e.add_argument("--data", required=True)
-    e.add_argument("--ckpt", default="checkpoints/se3plm_voxel_s0.safetensors",
-                   help="SE3PLM checkpoint; ignored when --esm is given")
+    e.add_argument("--ckpt", default="checkpoints/BioT_voxel_s0.safetensors",
+                   help="BioT checkpoint; ignored when --esm is given")
     e.add_argument("--esm", default=None, metavar="MODEL",
                    help="embed with fair-esm instead, e.g. esm2_t33_650M_UR50D")
     e.add_argument("--esm-layer", type=int, default=None,
@@ -838,7 +838,7 @@ def main():
                    help="skip the context embedding")
     e.add_argument("--embed-tensor", choices=("forward_int", "z"),
                    default="forward_int",
-                   help="which SE3PLM tensor to cache. Use z for the voxel "
+                   help="which BioT tensor to cache. Use z for the voxel "
                         "ablation (both arms must match).")
     e.add_argument("--ctx-stride", type=int, default=33,
                    help="one 5-token span hidden every this many tokens")
