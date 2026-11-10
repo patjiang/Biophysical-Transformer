@@ -69,12 +69,7 @@ python ../plot_caid.py metrics \
 python ../plot_caid.py pca \
     --reference CAID/demo-data/references/disorder_pdb.fasta \
     --ckpt ../../checkpoints/BioT_voxel_s0.safetensors \
-    --out figures/pca/ --max-proteins 20
-
-python ../plot_caid.py pca-global \
-    --reference CAID/demo-data/references/disorder_pdb.fasta \
-    --ckpt ../../checkpoints/BioT_voxel_s0.safetensors \
-    --out figures/pca_global.png
+    --out figures/pca_proteins.png
 ```
 
 ### Optional: cross-validate
@@ -100,6 +95,5 @@ tests/idr_bench/
   results/             CAID assessment output (CSVs)
   figures/             plots
     caid_metrics.png
-    pca_global.png
-    pca/               per-protein PCA scatterplots
+    pca_proteins.png
 ```
