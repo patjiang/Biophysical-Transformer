@@ -134,8 +134,13 @@ def pad_positions(spans, device):
 # ---------------------------------------------------------------------- model
 
 def load_model(ckpt_path, device, dtype=torch.bfloat16):
-    """Load an BioT checkpoint for evaluation."""
-    model = BioTLightning.load_from_checkpoint(ckpt_path, map_location="cpu")
+    """Load a BioT checkpoint (.ckpt or .safetensors)."""
+    if ckpt_path.endswith(".safetensors"):
+        from safetensors.torch import load_file
+        model = BioTLightning()
+        model.load_state_dict(load_file(ckpt_path), strict=False)
+    else:
+        model = BioTLightning.load_from_checkpoint(ckpt_path, map_location="cpu")
     model = model.to(dtype=dtype, device=device)
     model.eval()
     return model
