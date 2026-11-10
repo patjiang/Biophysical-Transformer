@@ -36,8 +36,8 @@ from sklearn.linear_model import Ridge
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
 
-from src.model import *    # noqa: F401,F403
-from src.data import *     # noqa: F401,F403
+from model import *
+from data import *
 
 torch.set_num_threads(1)
 
