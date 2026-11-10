@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-echo "Setting up EBPT environment"
-
+echo "Setting up BioT environment"
 
 ENV_NAME="EBPT"
 PYTHON_VERSION="3.10"
@@ -48,9 +47,6 @@ pip install \
     matplotlib==3.10.3
 
 echo "Verifying SE3CNN installation"
-
-#rm -r se3cnn
-
 python - << 'EOF'
 import torch
 from se3cnn.image.convolution import SE3Convolution
@@ -62,14 +58,17 @@ Rs_out = [(1, 1)]
 conv = SE3Convolution(Rs_in, Rs_out, size=5)
 
 vector_field = conv(scalar_field)
-print("E3-CNN test passed! No errors.")
+print("SE3CNN OK")
 EOF
 
+echo "Installing package (editable)"
+pip install -e .
+
 if [ -f "test.py" ]; then
-    echo "Running final test.py"
+    echo "Running test.py"
     python test.py
 else
-    echo "test.py not found, skipping final test"
+    echo "test.py not found, skipping"
 fi
 
-echo "EBPT setup complete!"
+echo "BioT setup complete!"
