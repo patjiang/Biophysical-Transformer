@@ -135,17 +135,7 @@ def per_residue_embeddings(model, seq, device, max_tokens=1024,
     D = z.shape[1]
     res_z = torch.zeros(L, D)
     res_c = torch.zeros(L)
-    for dr in range(K):def load_model(ckpt_path, device, dtype=torch.bfloat16):
-    """Load a BioT checkpoint (.ckpt or .safetensors)."""
-    if ckpt_path.endswith(".safetensors"):
-        from safetensors.torch import load_file
-        model = BioTLightning()
-        model.load_state_dict(load_file(ckpt_path), strict=False)
-    else:
-        model = BioTLightning.load_from_checkpoint(ckpt_path, map_location="cpu")
-    model = model.to(dtype=dtype, device=device)
-    model.eval()
-    return model
+    for dr in range(K):
         end = min(n_kmers, L - dr)
         res_z[dr:dr + end] += z[:end]
         res_c[dr:dr + end] += 1
