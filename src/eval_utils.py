@@ -41,7 +41,7 @@ from data import *
 
 torch.set_num_threads(1)
 
-CKPT_PATH = "../tests/ckpts/voxel.ckpt"
+CKPT_PATH = "checkpoints/se3plm_voxel_s0.safetensors"
 
 VOCAB_SIZE = 8003
 BOS_ID = 8002
