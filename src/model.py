@@ -1,4 +1,5 @@
-"""SE3PLM LightningModule: networks, staging, optimisation and logging.
+"""
+BioT LightningModule: networks, staging, optimisation and logging.
 """
 
 import dataclasses
@@ -45,7 +46,7 @@ super-isotropy, and a lower pr_ref widens the range where that happens.
 """
 
 
-class SE3PLMLightning(pl.LightningModule):
+class BioTLightning(pl.LightningModule):
     """SE3 protein language model with staged reconstruction training.
 
     Stage 1 (epochs < ``recon_start_epoch``): MLM + DINO + iBOT only.
