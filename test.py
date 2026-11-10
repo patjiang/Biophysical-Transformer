@@ -1,9 +1,9 @@
 import torch
 
-print("Running EBPT test.py")
+print("Running BioT test.py")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-dtype = torch.bfloat16 
+dtype = torch.bfloat16
 print(f"Using device: {device} with {dtype}")
 
 print("Testing SE3CNN...")
@@ -25,13 +25,13 @@ assert out.shape == scalar_field.shape
 print("SE3CNN OK")
 
 print("Testing module imports...")
-from EBPT.modules import (
+from src.blocks import (
     TransformerStackEnc,
     InteractionTokenBlock,
     VoxelizeTrunk,
     PatchDiscriminator3D,
 )
-from EBPT.losses import wa_loss
+from src.loss import wa_loss
 print("Module imports OK")
 
 print("Testing TransformerStackEnc...")
@@ -45,7 +45,7 @@ encoder = TransformerStackEnc(
     vocab_size=8002
 ).to(device).to(dtype)
 
-z = encoder(seqs) 
+z = encoder(seqs)
 assert z.shape == (B, L, 64)
 print("Encoder forward OK")
 
@@ -75,9 +75,9 @@ assert torch.isfinite(loss_val)
 print("WA loss OK")
 
 print("Testing Lightning module...")
-from EBPT.EBPT import EBPTLightning
+from src.model import BioTLightning
 
-model = EBPTLightning().to(device).to(dtype)
+model = BioTLightning().to(device).to(dtype)
 model.eval()
 
 seqs = torch.randint(0, 8002, (2, 32), device=device)
@@ -87,4 +87,4 @@ assert z.shape[0] == 2
 assert rec.ndim == 5
 print("Lightning forward OK")
 
-print("\nAll tests passed successfully!")
+print("\nAll tests passed!")
