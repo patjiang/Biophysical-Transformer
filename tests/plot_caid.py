@@ -105,18 +105,14 @@ def _embed_proteins(args):
     """Mean-pool per-residue BioT embeddings to one vector per protein."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-    import torch
-    from caid_disorder import per_residue_embeddings, parse_reference_fasta
-    from src.eval_utils import load_model
+    from caid_disorder import Embedder, parse_reference_fasta
 
-    model = load_model(args.ckpt, args.device)
+    embedder = Embedder(args)
     entries = parse_reference_fasta(args.reference)
 
     vecs, pcts, accs = [], [], []
     for idx, (acc, seq, labels) in enumerate(entries):
-        emb, clean = per_residue_embeddings(
-            model, seq, args.device,
-            max_tokens=args.max_tokens, stride=args.stride, layer=args.layer)
+        emb, clean = embedder.per_residue(seq)
         if emb is None:
             continue
         L = min(len(clean), len(labels), emb.shape[0])
