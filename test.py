@@ -1,6 +1,3 @@
-import sys
-sys.path.insert(0, "src")
-
 import torch
 
 print("Running BioT test.py")
