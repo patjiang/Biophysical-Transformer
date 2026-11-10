@@ -20,7 +20,7 @@ from .blocks import (
     TransformerStackEnc, FactorizedMLMHead, InteractionTokenBlock,
     VoxelizeTrunk, collapse_penalty, effective_rank,
 )
-import .loss as L
+from . import loss as L
 from .span_masking import span_mask_tokens
 
 PAD_TOKEN_ID = 8000
