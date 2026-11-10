@@ -1,4 +1,4 @@
-"""Loss terms for SE3PLM.
+"""Loss terms for BioT.
 Run ``audit_objective.py`` after any change here.
 """
 
