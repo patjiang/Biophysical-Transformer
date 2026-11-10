@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Pretraining-exposure audit: SE3PLM's corpus, and ESM's, against FLIP test splits.
+"""Pretraining-exposure audit: BioT's corpus, and ESM's, against FLIP test splits.
 
 Usage::
 
@@ -510,7 +510,7 @@ def fig_ladder(res, out):
     ax.set_xlim(-2.0, len(LADDER) - 0.75)
     ax.set_xlabel("3-mer containment against the best single corpus protein")
     ax.set_ylabel("FLIP test proteins at or above (%)")
-    ax.set_title("How much of FLIP's test set is in SE3PLM's corpus",
+    ax.set_title("How much of FLIP's test set is in BioT's corpus",
                  loc="left", fontsize=10, pad=10)
     ax.set_xticks(x)
     ax.set_xticklabels([f"{t:.2f}" for t in LADDER])
@@ -561,7 +561,7 @@ def fig_null(res, out):
 
 
 def fig_exposure(res, out):
-    """SE3PLM exposure beside ESM's, grouped bars."""
+    """BioT exposure beside ESM's, grouped bars."""
     import matplotlib.pyplot as plt
     import numpy as np
     ex = res.get("exposure")
@@ -570,7 +570,7 @@ def fig_exposure(res, out):
     _style()
     splits = [s for s in res["splits"] if s in ex]
     snap1b = res.get("esm1b_snapshot", ESM1B_SNAPSHOT)
-    models = [("SE3PLM", lambda s: 100 * res["splits"][s]["ladder"]["0.95"]),
+    models = [("BioT", lambda s: 100 * res["splits"][s]["ladder"]["0.95"]),
               ("ESM-1b", lambda s: 100 * ex[s]["esm1b"]["of_test"]),
               ("ESM-1v", lambda s: 100 * ex[s]["esm1v"]["of_test"])]
     fig, ax = plt.subplots(figsize=(5.8, 3.5))
@@ -600,7 +600,7 @@ def fig_exposure(res, out):
     for s in ("top", "right"):
         ax.spines[s].set_visible(False)
     ax.annotate(
-        f"SE3PLM: >=0.95 3-mer containment against its own corpus.\n"
+        f"BioT: >=0.95 3-mer containment against its own corpus.\n"
         f"ESM-1b: UniRef50 (50% identity), snapshot {snap1b}.  "
         f"ESM-1v: UniRef90 {ESM1V_SNAPSHOT}, 98M sequences.\n"
         f"ESM bars count test proteins present in UniProt before the "
@@ -670,7 +670,7 @@ def write_tables(res, out):
         with open(out / "exposure.csv", "w", newline="") as fh:
             w = _csv.writer(fh)
             w.writerow(["split", "n_test", "matched_in_uniprot", "match_rate",
-                        "se3plm_ge095", "esm1b_n", "esm1b_pct",
+                        "BioT_ge095", "esm1b_n", "esm1b_pct",
                         "esm1v_n", "esm1v_pct"])
             for split, e in res["exposure"].items():
                 lad = res["splits"][split]["ladder"]["0.95"]
@@ -743,7 +743,7 @@ def main():
     log("  PRETRAINING EXPOSURE AUDIT")
     rule()
 
-    log("\n[1] SE3PLM pretraining corpus")
+    log("\n[1] BioT pretraining corpus")
     tr, ordinfo = corpus_items(ds_cls, enc, a.train_dir, a.limit)
     va = []
     if Path(a.val_dir).exists():
@@ -850,7 +850,7 @@ def main():
                     f"{e['esm1b']['of_test']:>13.1%}"
                     f"{e['esm1v']['of_test']:>13.1%}")
 
-    log("\n[7] SE3PLM corpus species mixture")
+    log("\n[7] BioT corpus species mixture")
     w = Counter(x["pdbid"].split("_")[0].upper() for x in allit)
     sp = species_mix(w, out, a.species)
     if sp:
