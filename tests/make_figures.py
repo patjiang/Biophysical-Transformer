@@ -177,7 +177,7 @@ def _ladder_at(res, split, level):
 
 
 def fig_exposure(res, out):
-    """SE3PLM exposure beside ESM's, grouped bars with whisker span."""
+    """BioT exposure beside ESM's, grouped bars with whisker span."""
     import matplotlib.pyplot as plt
     import numpy as np
     ex = res.get("exposure")
@@ -186,7 +186,7 @@ def fig_exposure(res, out):
     style()
     splits = [s for s in res["splits"] if s in ex]
     lo_k, hi_k = EXPOSURE_SPAN
-    models = [("SE3PLM",
+    models = [("BioT",
                lambda s: 100 * _ladder_at(res, s, EXPOSURE_LEVEL)),
               ("ESM-1b", lambda s: 100 * ex[s]["esm1b"]["of_test"]),
               ("ESM-1v", lambda s: 100 * ex[s]["esm1v"]["of_test"])]
@@ -196,7 +196,7 @@ def fig_exposure(res, out):
         v = [f(s) for s in splits]
         b = ax.bar(x + (j - 1) * (w + 0.02), v, w, label=name,
                    color=["#2a78d6", "#eb6834", "#1baf7a"][j], zorder=3, lw=0)
-        if name == "SE3PLM":
+        if name == "BioT":
             lo = [100 * _ladder_at(res, sp, hi_k) for sp in splits]
             hi = [100 * _ladder_at(res, sp, lo_k) for sp in splits]
             ax.errorbar(x + (j - 1) * (w + 0.02), v,
@@ -206,7 +206,7 @@ def fig_exposure(res, out):
                         capsize=3, capthick=1.0, zorder=4)
         for k_, (rect, val) in enumerate(zip(b, v)):
             top = 100 * _ladder_at(res, splits[k_], lo_k) \
-                if name == "SE3PLM" else val
+                if name == "BioT" else val
             ax.annotate(f"{val:.1f}",
                         (rect.get_x() + rect.get_width() / 2, top),
                         xytext=(0, 4), textcoords="offset points",
@@ -228,7 +228,7 @@ def fig_exposure(res, out):
     snap = res.get("esm1b_snapshot", "2018-03")
     CAPTIONS["fig3_exposure"] = (
         "\\textbf{Pretraining exposure to the FLIP test proteins, each model "
-        "judged by its own criterion.} SE3PLM: test proteins with at least "
+        "judged by its own criterion.} BioT: test proteins with at least "
         f"{EXPOSURE_LEVEL} of their 3-mers inside a single protein of its "
         "26{{,}}773-structure corpus, the level used throughout the paper and "
         "the level at which proteins are removed for the restricted re-run. "
