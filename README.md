@@ -1,7 +1,7 @@
 # Beyond Sequence and Structure: Pretraining PLMs on Continuous Biophysical Fields
 
 <p align="center">
-  <img src="assets/fig_overviewv2.png" width="100%" alt="SE3PLM overview: sequence to stride-1 3-mer tokens to electrostatic field reconstruction"/>
+  <img src="assets/fig_overviewv2.png" width="100%" alt="BioT overview: sequence to stride-1 3-mer tokens to electrostatic field reconstruction"/>
 </p>
 
 Most protein language models learn from sequence alone. Structure-aware models
@@ -150,8 +150,8 @@ test.py                integration smoke test
 pyproject.toml         package config for pip install -e .
 
 checkpoints/           pretrained weights (included in the repo)
-  se3plm_voxel_s0.safetensors    field arm, epoch 75
-  se3plm_novox_s0.safetensors    control arm, epoch 79
+  BioT_voxel_s0.safetensors    field arm, epoch 75
+  BioT_novox_s0.safetensors    control arm, epoch 79
 
 src/                   model and training code
   model.py               LightningModule (networks, staging, optimisation)
@@ -183,8 +183,8 @@ claim is a *difference* between arms, so the control is not optional.
 
 | | path | epoch |
 |---|---|---|
-| field arm | `checkpoints/se3plm_voxel_s0.safetensors` | 75 |
-| control arm | `checkpoints/se3plm_novox_s0.safetensors` | 79 |
+| field arm | `checkpoints/BioT_voxel_s0.safetensors` | 75 |
+| control arm | `checkpoints/BioT_novox_s0.safetensors` | 79 |
 
 Each arm is evaluated at its own best validation epoch.
 
