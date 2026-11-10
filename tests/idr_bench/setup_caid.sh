@@ -17,7 +17,8 @@ else
     git clone https://github.com/BioComputingUP/CAID.git
 fi
 
-pip install -r CAID/requirements.txt
+# CAID pins numpy>=3.11-only; install deps without version pins
+pip install numpy pandas scipy tqdm
 
 # Create working directories
 mkdir -p probes predictions results
