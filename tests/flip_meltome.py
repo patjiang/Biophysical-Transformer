@@ -125,7 +125,7 @@ class SE3Backend:
     name = "se3plm"
 
     def __init__(self, args):
-        from src.proteingym_eval import load_model, sanitize
+        from src.eval_utils import load_model, sanitize
         from src.data import seqs_to_tens
         self.sanitize, self.seqs_to_tens = sanitize, seqs_to_tens
         self.model = load_model(args.ckpt, args.device)
@@ -179,7 +179,7 @@ class ESMBackend:
             import esm
         except ImportError as e:
             raise SystemExit("--esm needs fair-esm:  pip install fair-esm") from e
-        from src.proteingym_eval import sanitize
+        from src.eval_utils import sanitize
         self.sanitize = sanitize
         if not hasattr(esm.pretrained, args.esm):
             raise SystemExit(
