@@ -1,4 +1,4 @@
-"""SE3PLM building blocks.
+"""BioT building blocks.
 
 Equivariant attention, the voxel decoder, the RoPE sequence encoder,
 representation-collapse diagnostics, and voxel-level losses.
