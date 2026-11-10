@@ -68,7 +68,7 @@ EOF
 
 echo "Installing package (editable)"
 pip install -e .
-
+conda activate BioT
 if [ -f "test.py" ]; then
     echo "Running test.py"
     python test.py
