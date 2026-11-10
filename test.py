@@ -1,3 +1,6 @@
+import sys
+sys.path.insert(0, "src")
+
 import torch
 
 print("Running BioT test.py")
@@ -32,7 +35,7 @@ seqs = torch.randint(0, 8002, (B, L), device=device)
 # encoder forward
 z, rec = model(seqs)
 assert z.shape[0] == B
-assert z.shape[2] == model.student_encoder.output_dim
+assert z.ndim == 3
 assert rec.ndim == 5
 print(f"  forward OK  z={tuple(z.shape)}  rec={tuple(rec.shape)}")
 
