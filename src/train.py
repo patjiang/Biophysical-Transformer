@@ -79,8 +79,8 @@ pl.seed_everything(a.seed, workers=True)
 # autocast(enabled=False), must match across arms.
 torch.set_float32_matmul_precision('high')
 
-from data import *
-from model import *
+from .data import *
+from .model import *
 
 print("=" * 70)
 print(f"  ABLATION ARM {'B (no voxel)' if a.no_voxel else 'A (voxel)'}"
