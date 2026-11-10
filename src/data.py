@@ -7,7 +7,7 @@ import torch
 import torch.distributed as dist
 from torch.utils.data import Dataset, DataLoader
 
-from span_masking import span_mask_tokens
+from .span_masking import span_mask_tokens
 
 PAD_TOKEN_ID = 8000
 MASK_TOKEN_ID = 8001
