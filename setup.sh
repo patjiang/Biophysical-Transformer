@@ -22,61 +22,33 @@ pip install --upgrade pip
 pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
     --index-url https://download.pytorch.org/whl/cu126
 
-# Point CUDA_HOME at PyTorch's bundled CUDA so C++ extensions compile
-# against 12.6, not whatever version the system nvcc happens to be.
-TORCH_CUDA_DIR=$(python -c "import torch.utils.cpp_extension as e; import os; print(os.path.dirname(e._find_cuda_home()))" 2>/dev/null || true)
-if [ -z "${TORCH_CUDA_DIR}" ]; then
-    # Fallback: locate the nvidia/cuda_runtime package that pip installed
-    TORCH_CUDA_DIR=$(python -c "
-import nvidia.cuda_runtime as cr, os
-print(os.path.join(os.path.dirname(os.path.dirname(cr.__file__)), 'cuda_runtime'))
-" 2>/dev/null || true)
-fi
+# Install pip nvcc matching the PyTorch CUDA version so C++ extensions
+# compile against 12.6 regardless of the system CUDA.
+pip install nvidia-cuda-nvcc-cu12==12.6.77
 
-# The most reliable path: build the CUDA_HOME from PyTorch's own nvcc
-NVCC_PATH=$(python -c "
-import torch, pathlib, glob, os
-base = pathlib.Path(torch.__file__).resolve().parent
-candidates = sorted(glob.glob(str(base / '..') + '/nvidia/cuda_nvrtc/lib*'))
-if candidates:
-    print(os.path.dirname(os.path.dirname(candidates[0])))
-" 2>/dev/null || true)
-
-# Construct a minimal CUDA_HOME that has bin/nvcc and include/
-# from the pip-installed nvidia packages
+# Build a minimal CUDA_HOME from the pip-installed nvidia packages.
+# This keeps the se3cnn C++ extension from seeing system CUDA 13.x.
 CUDA_SHIM="${PWD}/.cuda_shim"
 echo "Building CUDA shim at ${CUDA_SHIM}"
 rm -rf "${CUDA_SHIM}"
 mkdir -p "${CUDA_SHIM}/bin" "${CUDA_SHIM}/lib64" "${CUDA_SHIM}/include"
 
-# Symlink nvcc from the nvcc pip package
-NVCC_BIN=$(python -c "
-import glob, os, site
-for d in site.getsitepackages():
-    hits = glob.glob(os.path.join(d, 'nvidia', 'cuda_nvcc', 'bin', 'nvcc'))
-    if hits:
-        print(hits[0]); break
-" 2>/dev/null || true)
-
-if [ -n "${NVCC_BIN}" ] && [ -f "${NVCC_BIN}" ]; then
-    ln -sf "${NVCC_BIN}" "${CUDA_SHIM}/bin/nvcc"
-else
-    # Use system nvcc as last resort but override the version check
-    echo "  warning: pip nvcc not found, using system nvcc"
-    ln -sf "$(which nvcc)" "${CUDA_SHIM}/bin/nvcc"
-fi
-
-# Symlink headers and libs from the pip CUDA packages
 SITE_PKGS=$(python -c "import site; print(site.getsitepackages()[0])")
-for pkg in cuda_runtime cuda_nvrtc cublas cusolver cusparse cufft curand; do
-    pkg_dir="${SITE_PKGS}/nvidia/${pkg}"
+
+# nvcc binary
+ln -sf "${SITE_PKGS}/nvidia/cuda_nvcc/bin/nvcc" "${CUDA_SHIM}/bin/nvcc"
+
+# Headers and libs from every pip nvidia-cuda-* package
+for pkg_dir in "${SITE_PKGS}"/nvidia/cuda_*/ "${SITE_PKGS}"/nvidia/cublas/ \
+               "${SITE_PKGS}"/nvidia/cusolver/ "${SITE_PKGS}"/nvidia/cusparse/ \
+               "${SITE_PKGS}"/nvidia/cufft/ "${SITE_PKGS}"/nvidia/curand/; do
     [ -d "${pkg_dir}/include" ] && cp -rsn "${pkg_dir}/include/"* "${CUDA_SHIM}/include/" 2>/dev/null || true
     [ -d "${pkg_dir}/lib" ]     && cp -rsn "${pkg_dir}/lib/"*     "${CUDA_SHIM}/lib64/"   2>/dev/null || true
 done
 
 export CUDA_HOME="${CUDA_SHIM}"
 export TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6;8.9;9.0"
-echo "  CUDA_HOME=${CUDA_HOME}"
+echo "  CUDA_HOME=${CUDA_HOME}  (nvcc: $(${CUDA_SHIM}/bin/nvcc --version | tail -1))"
 
 SE3CNN_DIR="se3cnn-patch"
 
