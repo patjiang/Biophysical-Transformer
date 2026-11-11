@@ -4,7 +4,7 @@
 set -e
 
 mkdir -p training_sets
-
+conda install -c bioconda mmseqs2 -y
 # ── ESM2: trained on UniRef50 ──
 # Current release (~47M sequences, ~7GB compressed).
 # ESM2 used the 2022_01 snapshot but the current release is
