@@ -121,33 +121,66 @@ def _embed_proteins_with(embedder, entries):
     return np.stack(vecs), np.array(pcts), accs
 
 
-def _pca_panel(ax, xy, pct, var_ratio, title):
-    """Draw one PCA scatter panel coloured by % disorder."""
+def _reduce(X, n_pca=None):
+    """PCA denoise then UMAP, using pre-PCA distances for the neighbour graph.
+
+    Returns ``(xy, info_str)`` where *xy* is ``(N, 2)``.
+    """
+    from sklearn.decomposition import PCA
+    from sklearn.metrics import pairwise_distances
+    from umap import UMAP
+
+    # Pre-PCA pairwise distances (original space)
+    D_orig = pairwise_distances(X, metric="euclidean")
+
+    # PCA to a shared intermediate dimensionality
+    if n_pca is None:
+        n_pca = min(50, X.shape[1], X.shape[0] - 1)
+    pca = PCA(n_components=n_pca).fit(X)
+    X_pca = pca.transform(X)
+    var_kept = pca.explained_variance_ratio_.sum()
+
+    # UMAP init from first two PCs (stable, reproducible)
+    init = X_pca[:, :2] / (X_pca[:, :2].std(axis=0, keepdims=True) + 1e-8) * 1e-4
+
+    # UMAP with precomputed distances from the original space
+    reducer = UMAP(n_components=2, metric="precomputed",
+                   n_neighbors=min(15, X.shape[0] - 1),
+                   min_dist=0.3, init=init, random_state=42)
+    xy = reducer.fit_transform(D_orig)
+
+    info = f"PCA({n_pca}, {var_kept:.0%} var) → UMAP"
+    return xy, info
+
+
+def _scatter_panel(ax, xy, pct, title, info):
+    """Draw one UMAP scatter panel coloured by % disorder."""
     sc = ax.scatter(xy[:, 0], xy[:, 1], c=pct, cmap="RdYlBu_r",
                     vmin=0, vmax=1, s=18, alpha=0.8,
                     linewidths=0, rasterized=True)
-    ax.set_xlabel(f"PC1 ({var_ratio[0]:.0%})", fontsize=9)
-    ax.set_ylabel(f"PC2 ({var_ratio[1]:.0%})", fontsize=9)
+    ax.set_xlabel("UMAP 1", fontsize=9)
+    ax.set_ylabel("UMAP 2", fontsize=9)
     ax.set_title(title, fontsize=10, fontweight="bold")
+    ax.text(0.02, 0.02, info, transform=ax.transAxes,
+            fontsize=7, color="0.4", va="bottom")
     return sc
 
 
 def cmd_pca(args):
-    """PCA of each model's own embedding space, coloured by % disorder.
+    """PCA-denoised UMAP of each model's own embedding space.
 
-    Top row: BioT and ESM2 (each in their own PCA).
-    Bottom row: .caid predictor scores projected into BioT's PCA
-    (score-coloured, for visual reference only).
+    For each model: PCA to a shared number of dimensions (denoising),
+    then UMAP with distances computed from the original (pre-PCA)
+    embeddings.  Coloured by ground-truth % disorder.
     """
-    from sklearn.decomposition import PCA
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from caid_disorder import Embedder, parse_reference_fasta
     import types
 
     entries = parse_reference_fasta(args.reference)
     n_prot = len(entries)
+    n_pca = args.n_pca
 
-    # ── Top row: real embedding spaces ──
     embedding_models = []
 
     # BioT
@@ -157,10 +190,9 @@ def cmd_pca(args):
         max_tokens=args.max_tokens, stride=args.stride, layer=args.layer)
     biot_emb = Embedder(biot_args)
     X_b, pct_b, acc_b = _embed_proteins_with(biot_emb, entries)
-    pca_b = PCA(n_components=2).fit(X_b)
-    xy_b = pca_b.transform(X_b)
-    embedding_models.append(("BioT", xy_b, pct_b, pca_b.explained_variance_ratio_))
     print(f"  BioT: {len(X_b)} proteins, D={X_b.shape[1]}")
+    xy_b, info_b = _reduce(X_b, n_pca)
+    embedding_models.append(("BioT", xy_b, pct_b, info_b))
 
     # ESM2
     esm_name = args.esm or "esm2_t33_650M_UR50D"
@@ -171,10 +203,9 @@ def cmd_pca(args):
     try:
         esm_emb = Embedder(esm_args)
         X_e, pct_e, acc_e = _embed_proteins_with(esm_emb, entries)
-        pca_e = PCA(n_components=2).fit(X_e)
-        xy_e = pca_e.transform(X_e)
-        embedding_models.append((esm_name, xy_e, pct_e, pca_e.explained_variance_ratio_))
         print(f"  ESM2: {len(X_e)} proteins, D={X_e.shape[1]}")
+        xy_e, info_e = _reduce(X_e, n_pca)
+        embedding_models.append((esm_name, xy_e, pct_e, info_e))
     except SystemExit as e:
         print(f"  ESM2 skipped: {e}")
 
@@ -182,14 +213,14 @@ def cmd_pca(args):
     n = len(embedding_models)
     fig, axes = plt.subplots(1, n, figsize=(5.5 * n, 4.5), squeeze=False)
 
-    for col, (name, xy, pct, var) in enumerate(embedding_models):
-        sc = _pca_panel(axes[0, col], xy, pct, var, name)
+    for col, (name, xy, pct, info) in enumerate(embedding_models):
+        sc = _scatter_panel(axes[0, col], xy, pct, name, info)
 
     cb = fig.colorbar(sc, ax=axes.ravel().tolist(),
                       pad=0.02, shrink=0.85, location="right")
     cb.set_label("% disordered", fontsize=9)
 
-    fig.suptitle(f"Embedding PCA — {n_prot} CAID proteins", fontsize=12,
+    fig.suptitle(f"Embedding UMAP — {n_prot} CAID proteins", fontsize=12,
                  fontweight="bold")
 
     out = Path(args.out)
@@ -230,7 +261,9 @@ def main():
     s2.add_argument("--max-tokens", type=int, default=1024)
     s2.add_argument("--stride", type=int, default=512)
     s2.add_argument("--layer", default="int", choices=["int", "enc"])
-    s2.add_argument("--out", default="figures/pca_proteins.png")
+    s2.add_argument("--n-pca", type=int, default=None,
+                    help="PCA dims before UMAP (default: min(50, D))")
+    s2.add_argument("--out", default="figures/umap_proteins.png")
     s2.set_defaults(func=cmd_pca)
 
     args = p.parse_args()
