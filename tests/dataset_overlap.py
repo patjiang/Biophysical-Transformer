@@ -1,8 +1,11 @@
 #!/usr/bin/env python
-"""Training-set overlap for CAID benchmark proteins.
+"""Training-set overlap for CAID benchmark proteins via MMseqs2 clustering.
 
-Wraps the same 3-mer containment + shuffled null from fasta_overlap.py,
-but runs all compared models in one invocation::
+For each training corpus, concatenates the CAID query proteins with the
+corpus, clusters at 80% sequence identity, and reports which CAID proteins
+land in a cluster with a training sequence.
+
+Usage::
 
     python dataset_overlap.py \\
         --caid CAID/demo-data/references/disorder_pdb.fasta \\
@@ -11,290 +14,201 @@ but runs all compared models in one invocation::
         --corpus biot=/path/to/biot_corpus.fasta \\
         --out overlap/
 
-For each corpus the script writes ``overlap/<name>.csv`` (one row per
-CAID protein, columns compatible with ``stack_check.py --exclude``) and
-prints a summary table comparing all models.
-
-The containment metric, threshold calibration and output columns are
-identical to ``fasta_overlap.py`` so results are directly comparable
-to the paper's pretraining-exposure audit.
+Requires ``mmseqs`` on PATH (https://github.com/soedinglab/MMseqs2).
 """
 
 import argparse
 import csv
-import hashlib
+import subprocess
 import sys
+import tempfile
+from collections import defaultdict
 from pathlib import Path
-
-import numpy as np
-
-AA20 = set("ACDEFGHIKLMNPQRSTVWY")
 
 
 def log(s=""):
     print(s, flush=True)
 
 
-def rule(c="-"):
-    log(c * 74)
+def check_mmseqs():
+    try:
+        r = subprocess.run(["mmseqs", "version"], capture_output=True, text=True)
+        log(f"  mmseqs2 version: {r.stdout.strip()}")
+    except FileNotFoundError:
+        sys.exit("mmseqs2 not found. Install: conda install -c bioconda mmseqs2")
 
 
-# ----------------------------------------------------------------- sequences
-
-def read_fasta(path):
-    """(id, sequence) pairs from a FASTA file."""
-    out, name, buf = [], None, []
-    with open(path) as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            if line[0] == ">":
-                if name is not None:
-                    out.append((name, "".join(buf)))
-                name, buf = line[1:].split()[0] if len(line) > 1 else "?", []
+def strip_caid_labels(caid_path, out_path):
+    """Write a plain FASTA from a CAID reference FASTA (skip label lines)."""
+    label_chars = set("01-\n\r ")
+    with open(caid_path) as fin, open(out_path, "w") as fout:
+        expect_label = False
+        for line in fin:
+            if line.startswith(">"):
+                fout.write(line)
+                expect_label = True
+            elif expect_label and set(line.strip()) <= set("01-"):
+                expect_label = False  # skip label line
             else:
-                buf.append(line.upper())
-    if name is not None:
-        out.append((name, "".join(buf)))
-    return out
+                fout.write(line)
+                expect_label = False
 
 
-def read_caid_fasta(path):
-    """Parse CAID reference FASTA (>acc / seq / labels). Returns (id, seq)."""
-    label_chars = set("01-")
-    entries = []
-    with open(path) as f:
-        lines = [l.rstrip("\n\r") for l in f if l.strip() and not l.startswith("#")]
-    i = 0
-    while i < len(lines):
-        if lines[i].startswith(">"):
-            acc = lines[i][1:].split()[0]
-            seq = lines[i + 1]
-            # Skip label line if present
-            if i + 2 < len(lines) and set(lines[i + 2]) <= label_chars:
-                i += 3
+def read_ids(fasta_path):
+    """Return set of sequence ids from a FASTA."""
+    ids = set()
+    with open(fasta_path) as f:
+        for line in f:
+            if line.startswith(">"):
+                ids.add(line[1:].split()[0])
+    return ids
+
+
+def run_overlap(caid_fasta, corpus_path, corpus_name, out_dir, seqid, threads):
+    """Concatenate CAID + corpus, cluster, report overlapping CAID proteins."""
+    work = out_dir / f"_tmp_{corpus_name}"
+    work.mkdir(parents=True, exist_ok=True)
+
+    # Concatenate
+    combined = work / "combined.fasta"
+    log(f"  concatenating CAID + {corpus_name}...")
+    with open(combined, "w") as fout:
+        for src in [caid_fasta, corpus_path]:
+            with open(src) as fin:
+                for line in fin:
+                    fout.write(line)
+
+    caid_ids = read_ids(caid_fasta)
+    log(f"  {len(caid_ids)} CAID proteins")
+
+    # MMseqs2 cluster
+    db = str(work / "db")
+    clu = str(work / "clu")
+    tsv = str(work / "clu.tsv")
+
+    log(f"  clustering at {seqid:.0%} identity...")
+    subprocess.run([
+        "mmseqs", "createdb", str(combined), db
+    ], check=True, capture_output=True)
+
+    subprocess.run([
+        "mmseqs", "cluster", db, clu, str(work / "tmp"),
+        "--min-seq-id", str(seqid),
+        "-c", "0.8",
+        "--cov-mode", "0",
+        "--threads", str(threads),
+    ], check=True, capture_output=True)
+
+    subprocess.run([
+        "mmseqs", "createtsv", db, db, clu, tsv
+    ], check=True, capture_output=True)
+
+    # Parse clusters: rep -> [members]
+    clusters = defaultdict(set)
+    with open(tsv) as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            if len(parts) >= 2:
+                rep, member = parts[0], parts[1]
+                clusters[rep].add(member)
+
+    # Find CAID proteins that share a cluster with a training sequence
+    overlapping = {}
+    for rep, members in clusters.items():
+        caid_in = members & caid_ids
+        train_in = members - caid_ids
+        if caid_in and train_in:
+            for cid in caid_in:
+                overlapping[cid] = {
+                    "cluster_rep": rep,
+                    "cluster_size": len(members),
+                    "train_members": len(train_in),
+                }
+
+    # Write CSV
+    csv_path = out_dir / f"{corpus_name}.csv"
+    with open(csv_path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["caid_id", "cluster_rep", "cluster_size",
+                     "train_members", "overlaps"])
+        for cid in sorted(caid_ids):
+            if cid in overlapping:
+                o = overlapping[cid]
+                w.writerow([cid, o["cluster_rep"], o["cluster_size"],
+                            o["train_members"], True])
             else:
-                i += 2
-            entries.append((acc, seq.upper()))
-        else:
-            i += 1
-    return entries
+                w.writerow([cid, "", 0, 0, False])
+    log(f"  wrote {csv_path}")
 
+    # Cleanup mmseqs temp files
+    import shutil
+    shutil.rmtree(work, ignore_errors=True)
 
-def kmers(s):
-    """Distinct 3-mers over the 20 standard residues."""
-    return {s[i:i + 3] for i in range(len(s) - 2)
-            if s[i] in AA20 and s[i + 1] in AA20 and s[i + 2] in AA20}
-
-
-# ------------------------------------------------------------------- index
-
-class Index:
-    """Inverted 3-mer index for fast all-pairs containment."""
-
-    def __init__(self, kmer_sets):
-        self.sizes = np.array([len(s) for s in kmer_sets], dtype=np.int64)
-        self.n = len(kmer_sets)
-        vocab, rows, cols = {}, [], []
-        for j, s in enumerate(kmer_sets):
-            for w in s:
-                k = vocab.get(w)
-                if k is None:
-                    k = vocab[w] = len(vocab)
-                rows.append(k)
-                cols.append(j)
-        self.vocab = vocab
-        rows = np.asarray(rows, dtype=np.int64)
-        cols = np.asarray(cols, dtype=np.int64)
-        order = np.argsort(rows, kind="stable")
-        self.post = cols[order]
-        self.offs = np.searchsorted(rows[order], np.arange(len(vocab) + 1))
-
-    def best(self, q):
-        """(forward containment, corpus index, shared count)."""
-        ks = [self.vocab[w] for w in q if w in self.vocab]
-        if not ks:
-            return 0.0, -1, 0
-        c = np.bincount(np.concatenate(
-            [self.post[self.offs[k]:self.offs[k + 1]] for k in ks]),
-            minlength=self.n)
-        j = int(np.argmax(c))
-        return float(c[j]) / max(len(q), 1), j, int(c[j])
-
-
-# ---------------------------------------------------------- overlap check
-
-def run_overlap(queries, corpus_kmer_sets, corpus_names, call=0.80,
-                min_kmers=30, null_reps=5, null_limit=2000, seed=0):
-    """Run overlap analysis. Returns (rows, summary_dict)."""
-    idx = Index(corpus_kmer_sets)
-    log(f"  {idx.n:,} corpus proteins, {len(idx.vocab):,} distinct 3-mers")
-
-    # Score queries
-    rows, fwd = [], np.zeros(len(queries))
-    for i, (name, seq, kset) in enumerate(queries):
-        f, j, inter = idx.best(kset)
-        fwd[i] = f
-        rev = inter / max(int(idx.sizes[j]), 1) if j >= 0 else 0.0
-        rows.append({
-            "id": name,
-            "seq_sha1": hashlib.sha1(seq.encode()).hexdigest(),
-            "len": len(seq), "n_kmers": len(kset),
-            "forward": round(f, 4), "reverse": round(rev, 4),
-            "match": corpus_names[j] if j >= 0 else "",
-            "match_tokens": int(idx.sizes[j]) if j >= 0 else 0,
-            "kind": ("same-protein" if rev >= 0.80 else "query-is-fragment"),
-        })
-        if (i + 1) % 500 == 0:
-            log(f"    {i + 1:,}/{len(queries):,}")
-
-    # Shuffled null
-    rng = np.random.default_rng(seed)
-    sub = queries[:null_limit]
-    null = []
-    for _, seq, _ in sub:
-        arr = np.frombuffer(seq.encode(), dtype="S1").copy()
-        for _ in range(null_reps):
-            rng.shuffle(arr)
-            k = kmers(arr.tobytes().decode())
-            if len(k) >= min_kmers:
-                null.append(idx.best(k)[0])
-    null = np.asarray(null) if null else np.zeros(1)
-
-    n_call = int((fwd >= call).sum())
-    summary = {
-        "n_query": len(queries),
-        "n_flagged": n_call,
-        "pct_flagged": n_call / max(len(queries), 1),
-        "null_max": float(null.max()),
-        "null_valid": null.max() < call,
-        "median_fwd": float(np.median(fwd)),
-        "p99_fwd": float(np.quantile(fwd, 0.99)),
+    return {
+        "name": corpus_name,
+        "n_caid": len(caid_ids),
+        "n_overlap": len(overlapping),
+        "pct": len(overlapping) / max(len(caid_ids), 1),
     }
-    return rows, summary
 
-
-# ------------------------------------------------------------------- main
 
 def main():
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--caid", required=True,
-                   help="CAID reference FASTA (query sequences)")
+                   help="CAID reference FASTA")
     p.add_argument("--corpus", action="append", required=True,
                    metavar="NAME=PATH",
                    help="training-set FASTA, e.g. esm2=training_sets/uniref50.fasta")
-    p.add_argument("--call", type=float, default=0.80,
-                   help="containment threshold for flagging overlap")
-    p.add_argument("--min-kmers", type=int, default=30)
-    p.add_argument("--null-reps", type=int, default=5)
-    p.add_argument("--null-limit", type=int, default=2000)
-    p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--out", default="overlap/",
-                   help="output directory for per-corpus CSVs")
+    p.add_argument("--seqid", type=float, default=0.80,
+                   help="MMseqs2 clustering identity threshold (default 0.80)")
+    p.add_argument("--threads", type=int, default=8)
+    p.add_argument("--out", default="overlap/")
     a = p.parse_args()
 
-    # Parse corpus arguments
+    check_mmseqs()
+
+    # Parse corpus args
     corpora = []
     for spec in a.corpus:
         if "=" in spec:
             name, path = spec.split("=", 1)
         else:
-            name = Path(spec).stem
-            path = spec
+            name, path = Path(spec).stem, spec
         corpora.append((name.strip(), path.strip()))
-
-    # Load CAID query sequences
-    rule("=")
-    log("dataset_overlap.py")
-    rule("=")
-    log(f"  CAID reference: {a.caid}")
-    caid_entries = read_caid_fasta(a.caid)
-    queries = []
-    short = 0
-    for name, seq in caid_entries:
-        k = kmers(seq)
-        if len(k) < a.min_kmers:
-            short += 1
-            continue
-        queries.append((name, seq, k))
-    log(f"  {len(queries):,} query proteins"
-        + (f" ({short:,} excluded under --min-kmers {a.min_kmers})"
-           if short else ""))
-    log()
 
     out_dir = Path(a.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Run each corpus
-    all_summaries = []
-    cols = ["id", "seq_sha1", "len", "n_kmers", "forward", "reverse",
-            "match", "match_tokens", "kind"]
+    # Strip CAID labels to plain FASTA
+    caid_fasta = out_dir / "_caid_seqs.fasta"
+    strip_caid_labels(a.caid, caid_fasta)
 
-    for corpus_name, corpus_path in corpora:
-        rule("=")
-        log(f"CORPUS: {corpus_name}  ({corpus_path})")
-        rule("=")
-
-        log("  loading corpus...")
-        raw = read_fasta(corpus_path)
-        corpus_ksets = []
-        corpus_names = []
-        for n, s in raw:
-            k = kmers(s)
-            if k:
-                corpus_ksets.append(k)
-                corpus_names.append(n)
-        log(f"  {len(corpus_ksets):,} proteins with valid 3-mers")
-
-        log("  building index and scoring...")
-        rows, summary = run_overlap(
-            queries, corpus_ksets, corpus_names,
-            call=a.call, min_kmers=a.min_kmers,
-            null_reps=a.null_reps, null_limit=a.null_limit, seed=a.seed)
-
-        # Write CSV
-        csv_path = out_dir / f"{corpus_name}.csv"
-        with open(csv_path, "w", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=cols)
-            w.writeheader()
-            for r in sorted(rows, key=lambda x: -x["forward"]):
-                w.writerow(r)
-        log(f"  wrote {csv_path}")
-
-        # Print per-corpus summary
-        fwd = np.array([r["forward"] for r in rows])
+    summaries = []
+    for name, path in corpora:
         log()
-        log(f"  {'median':>9}{'99th':>9}{'max':>9}{'flagged':>12}")
-        log(f"  {np.median(fwd):>9.3f}{np.quantile(fwd, .99):>9.3f}"
-            f"{fwd.max():>9.3f}"
-            f"  {summary['n_flagged']:>5}/{len(queries)}"
-            f" ({summary['pct_flagged']:.1%})")
-        if not summary["null_valid"]:
-            log(f"  !! null max {summary['null_max']:.3f} >= --call {a.call} "
-                f"-- threshold not calibrated for this corpus")
-        log()
+        log(f"{'=' * 60}")
+        log(f"CORPUS: {name}")
+        log(f"{'=' * 60}")
+        s = run_overlap(caid_fasta, path, name, out_dir, a.seqid, a.threads)
+        summaries.append(s)
 
-        summary["name"] = corpus_name
-        all_summaries.append(summary)
+    # Cleanup
+    caid_fasta.unlink(missing_ok=True)
 
-    # Final comparison table
-    rule("=")
-    log("COMPARISON")
-    rule("=")
-    log(f"  {'corpus':<20} {'flagged':>10} {'rate':>8} "
-        f"{'null_max':>10} {'calibrated':>12}")
-    rule(".")
-    for s in all_summaries:
-        cal = "YES" if s["null_valid"] else "NO"
-        log(f"  {s['name']:<20} {s['n_flagged']:>10} "
-            f"{s['pct_flagged']:>7.1%} "
-            f"{s['null_max']:>10.3f} {cal:>12}")
-    rule("=")
-    return 0
+    # Summary
+    log()
+    log(f"{'=' * 60}")
+    log(f"OVERLAP SUMMARY (clustering at {a.seqid:.0%} identity)")
+    log(f"{'=' * 60}")
+    log(f"  {'corpus':<20} {'overlap':>10} {'total':>8} {'rate':>8}")
+    log(f"  {'-' * 20} {'-' * 10} {'-' * 8} {'-' * 8}")
+    for s in summaries:
+        log(f"  {s['name']:<20} {s['n_overlap']:>10} "
+            f"{s['n_caid']:>8} {s['pct']:>7.1%}")
+    log(f"{'=' * 60}")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main() or 0)
