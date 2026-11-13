@@ -18,7 +18,7 @@ else
 fi
 
 # CAID pins numpy>=3.11-only; install deps without version pins
-pip install numpy pandas scipy tqdm umap-learn==0.5.6
+pip install numpy pandas scipy tqdm
 
 # Create working directories
 mkdir -p probes predictions results
