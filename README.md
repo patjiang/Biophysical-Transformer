@@ -20,11 +20,15 @@ masked language modelling, DINO and iBOT.
 
 On FLIP Meltome thermostability, this closes 8 % of the gap between an
 untrained 650M-parameter ESM encoder and ESM-1v on the human split — with
-600× fewer parameters and 4,700× fewer pretraining sequences. A matched
-one-flag control (--no-voxel) that is bit-identical at initialisation
-isolates the contribution: the field arm’s advantage survives residualising
-400-dimensional dipeptide composition and removing the 7 % of test proteins
-that overlap the pretraining corpus.
+600× fewer parameters and 4,700× fewer pretraining sequences. On CAID
+intrinsic disorder prediction, BioT +field achieves AUC-ROC 0.76 with only
+5 % pretraining overlap, versus ESM-2's 0.98 at 91 % overlap. On
+PLM-Interact PPI benchmarks, the field objective consistently improves
+interaction prediction despite BioT's 20× smaller embedding dimension. A
+matched one-flag control (`--no-voxel`) that is bit-identical at
+initialisation isolates the contribution: the field arm's advantage is
+statistically significant by paired protein-level bootstrap on both
+benchmarks.
 
 > **Built with** Python 3.10 · PyTorch 2.6 · CUDA 12.6 · PyTorch Lightning 2.5 · [se3cnn](https://github.com/patjiang/se3cnn-patch)
 
@@ -37,12 +41,12 @@ that overlap the pretraining corpus.
 
 ```bash
 bash setup.sh
-conda activate EBPT
+conda activate BioT
 pip install -e .
 python test.py
 ```
 
-`setup.sh` creates a conda environment called **EBPT** (Python 3.10), installs
+`setup.sh` creates a conda environment called **BioT** (Python 3.10), installs
 PyTorch with CUDA 12.6, the [se3cnn fork](https://github.com/patjiang/se3cnn-patch)
 for equivariant 3D convolutions, and all remaining dependencies. It skips
 creation if the environment already exists, and runs a quick SE3 convolution
@@ -62,8 +66,8 @@ decoder, and Lightning module forward pass. If it passes, you're ready.
 **1. Create the environment**
 
 ```bash
-conda create -n EBPT python=3.10
-conda activate EBPT
+conda create -n BioT python=3.10
+conda activate BioT
 ```
 
 **2. Install PyTorch (CUDA 12.6)**
@@ -128,10 +132,10 @@ python test.py
 
 ## What can be reproduced out of the box
 
-**Everything downstream of FLIP Meltome.** FLIP is a public benchmark, and the
-released checkpoints are all you need. That covers the main transfer table, the
-composition-controlled analysis, the pretraining-exposure audit, and the
-restricted re-run.
+**Everything downstream of the checkpoints.** The released weights are all you
+need for the Meltome, CAID, and PPI benchmarks. That covers the main transfer
+tables, the composition-controlled analysis, the pretraining-exposure audit,
+the overlap analyses, and all figures.
 
 **The pretraining corpus is not yet public.** The electrostatic volume dataset
 (~21k proteins, 33³ potential boxes) will be released separately. Due to the
@@ -150,8 +154,8 @@ test.py                integration smoke test
 pyproject.toml         package config for pip install -e .
 
 checkpoints/           pretrained weights (included in the repo)
-  BioT_voxel_s0.safetensors    field arm, epoch 75
-  BioT_novox_s0.safetensors    control arm, epoch 79
+  BioT_voxel_s0.safetensors    +field arm, epoch 75
+  BioT_novox_s0.safetensors    −field arm, epoch 79
 
 src/                   model and training code
   model.py               LightningModule (networks, staging, optimisation)
@@ -163,7 +167,10 @@ src/                   model and training code
   train.py               training entry point and ablation harness
   eval_utils.py          checkpoint loading, tokenisation, embedding
 
-tests/                 evaluation and analysis scripts
+tests/                 evaluation and analysis scripts — see tests/README.md
+  caid_disorder.py       shared Embedder class (BioT + ESM-2)
+  idr_bench/             CAID intrinsic disorder benchmark
+  ppi_bench/             PLM-Interact PPI benchmark
   flip_meltome.py        embed → fit probes → postmortem
   stack_check.py         arm deltas, bootstrap CIs, composition control
   overlap_audit.py       pretraining-exposure audit
@@ -176,15 +183,17 @@ tests/                 evaluation and analysis scripts
 
 ---
 
-## Reproducing the Meltome results
+## Benchmarks
 
-Both checkpoints ship with the repo in `checkpoints/`. You need both -- the
+### FLIP Meltome (thermostability)
+
+Both checkpoints ship with the repo in `checkpoints/`. You need both — the
 claim is a *difference* between arms, so the control is not optional.
 
 | | path | epoch |
 |---|---|---|
-| field arm | `checkpoints/BioT_voxel_s0.safetensors` | 75 |
-| control arm | `checkpoints/BioT_novox_s0.safetensors` | 79 |
+| +field | `checkpoints/BioT_voxel_s0.safetensors` | 75 |
+| −field | `checkpoints/BioT_novox_s0.safetensors` | 79 |
 
 Each arm is evaluated at its own best validation epoch.
 
@@ -249,7 +258,7 @@ bash tests/run_rerun.sh --dry     # check paths, discover arms, run nothing
 bash tests/run_rerun.sh           # the real thing
 ```
 
-Always `--dry` first -- it verifies all twelve directories exist and discovers
+Always `--dry` first — it verifies all twelve directories exist and discovers
 which probe heads the predictions tables actually have.
 
 </details>
@@ -265,10 +274,6 @@ python tests/organism_table.py \
     --out organisms.csv
 ```
 
-Prints a ready `stack_check --restrict-to` command for each organism group
-large enough to carry an interval (≥200 proteins). Compare each group against
-the full mixed-split value, not against other groups.
-
 </details>
 
 <details>
@@ -280,9 +285,44 @@ python tests/make_figures.py --audit overlap_audit --rerun rerun
 
 </details>
 
-<br>
+### CAID (intrinsic disorder)
 
+```bash
+bash tests/idr_bench/setup_caid.sh       # from repo root, once
+cd tests/idr_bench && bash run_all_caid.sh
+```
 
+Evaluates per-residue disorder prediction on 319 CAID proteins. Compares
+BioT +field, BioT −field, and ESM-2 against published methods. Includes
+MMseqs2 pretraining-set overlap analysis and paired bootstrap significance
+testing. See [`tests/idr_bench/README.md`](tests/idr_bench/README.md).
+
+### PLM-Interact (protein–protein interaction)
+
+```bash
+bash tests/ppi_bench/setup_ppi.sh        # from repo root, once
+cd tests/ppi_bench && bash run_all_ppi.sh
+```
+
+Evaluates pairwise interaction prediction using a cross-attention probe over
+frozen per-residue embeddings. Three tasks: cross-species, Bernett,
+virus–human. Includes pretraining-set overlap analysis.
+See [`tests/ppi_bench/README.md`](tests/ppi_bench/README.md).
+
+### Combined benchmark figure
+
+From `tests/ppi_bench/`:
+
+```bash
+python plot_benchmarks.py \
+    --caid-csv ../idr_bench/results/disorder_pdb.analysis.all.dataset.default.metrics.csv \
+    --ppi-biot results_voxel/BioT_voxel_results.csv \
+    --ppi-novox results_novox/BioT_novox_results.csv \
+    --ppi-esm results_esm2/esm2_t33_650M_UR50D_results.csv \
+    --out figures/fig_benchmarks.png
+```
+
+---
 
 <p align="center"> <img src="assets/fig_impact.png" width="100%" alt="Impact summary: parameter and data efficiency, benchmark overlap, composition-controlled results, and gap closure"/> 
 </p> 
@@ -303,6 +343,9 @@ python tests/make_figures.py --audit overlap_audit --rerun rerun
   original token at masked positions.
 - **Embedding caches must carry a `sequence` field.** `stack_check` refuses
   a cache without one, because joining on row index risks silent misalignment.
+- **BioT +field / −field** refer to training with and without the voxel field
+  reconstruction loss. The `--no-voxel` flag in `train.py` produces the
+  −field control. Both arms are bit-identical at initialisation.
 
 </details>
 
