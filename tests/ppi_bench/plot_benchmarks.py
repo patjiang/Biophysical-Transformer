@@ -6,10 +6,10 @@ Single figure* with 5 panels:
   (b) CAID disorder metrics (AUC-ROC, MCC)
   (c–e) PPI AUPRC per task
 
-Usage::
+Run from tests/ppi_bench/::
 
     python plot_benchmarks.py \\
-        --caid-csv results/disorder_pdb.analysis.all.dataset.default.metrics.csv \\
+        --caid-csv ../idr_bench/results/disorder_pdb.analysis.all.dataset.default.metrics.csv \\
         --ppi-biot results_voxel/BioT_voxel_results.csv \\
         --ppi-novox results_novox/BioT_novox_results.csv \\
         --ppi-esm results_esm2/esm2_t33_650M_UR50D_results.csv \\
@@ -52,13 +52,13 @@ FS_BAR_IN = 5
 OVERLAP_ORDER = [
     # (display_name, colour)
     (LABEL_ESM,     C_ESM),
-    ("AlphaFold-rsa",   C_AF),
+    ("AlphaFold",   C_AF),
     ("BioT",        C_FIELD),
 ]
 
 OVERLAP_DATA = {
     # benchmark: {method: value}  (None = not applicable)
-    "CAID":                {LABEL_ESM: 0.909, "AlphaFold-rsa": 0.514, "BioT": 0.053},
+    "CAID":                {LABEL_ESM: 0.909, "AlphaFold": 0.514, "BioT": 0.053},
     "PPI: Cross-sp.":      {LABEL_ESM: 0.824, "BioT": 0.030},
     "PPI: Bernett":        {LABEL_ESM: 0.986, "BioT": 0.042},
     "PPI: Virus–hum.": {LABEL_ESM: 0.961, "BioT": 0.044},
@@ -147,7 +147,7 @@ def panel_overlap(ax):
     n_bench = len(benchmarks)
     all_methods = [m for m, _ in OVERLAP_ORDER]
 
-    bar_h = 0.30
+    bar_h = 0.20
     gap = 0.08
     y_bench = np.arange(n_bench) * 1.1  # extra row spacing
 
