@@ -4,7 +4,7 @@
 set -e
 
 mkdir -p training_sets
-conda install -c bioconda mmseqs2 -y
+
 # ── ESM2: trained on UniRef50 ──
 # Current release (~47M sequences, ~7GB compressed).
 # ESM2 used the 2022_01 snapshot but the current release is
@@ -37,7 +37,7 @@ if [ -f "${AF_OUT}" ]; then
 else
     echo "Downloading PDB sequences (~90MB)..."
     curl -L --progress-bar -o "${AF_OUT}.gz" \
-        "https://ftp.wwpdb.org/pub/pdb/derived_data/pdb_seqres.txt.gz"
+        "https://files.rcsb.org/pub/pdb/derived_data/pdb_seqres.txt.gz"
     if file "${AF_OUT}.gz" | grep -q gzip; then
         gunzip "${AF_OUT}.gz"
     else
