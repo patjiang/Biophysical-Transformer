@@ -362,11 +362,13 @@ and the frame assumption are not independently checkable.
 ## Citation
 
 ```bibtex
-@inproceedings{<KEY>,
+@article{jiang2026biot,
   title     = {Beyond Sequence and Structure: Pretraining PLMs on Continuous Biophysical Fields},
-  author    = {<AUTHORS>},
-  booktitle = {<VENUE>},
-  year      = {<YEAR>}
+  author    = {Jiang, Patrick and Singharoy, Abhishek},
+  journal   = {bioRxiv},
+  year      = {2026},
+  doi       = {10.64898/2026.11.09.765464},
+  url       = {https://doi.org/10.64898/2026.11.09.765464}
 }
 ```
 
