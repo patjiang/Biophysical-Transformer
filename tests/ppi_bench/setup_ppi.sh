@@ -49,5 +49,5 @@ echo "Done. Contents:"
 find data -name '*.csv' -exec wc -l {} \; | sort -t/ -k2
 echo ""
 echo "From tests/ppi_bench/, run:"
-echo "  python ../ppi_bench.py train --task cross_species --ckpt ../../checkpoints/BioT_voxel_s0.safetensors"
-echo "  python ../ppi_bench.py eval  --task cross_species --ckpt ../../checkpoints/BioT_voxel_s0.safetensors"
+echo "  python ppi_bench.py eval --task cross_species --ckpt ../../checkpoints/BioT_voxel_s0.safetensors"
+echo "  bash run_all_ppi.sh   # all models + overlap + plot"
